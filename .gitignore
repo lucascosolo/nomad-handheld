@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Per-device configuration overrides. Never committed.
+nomad.local.toml
+
+# Runtime state
+var/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Deploy freeze lockfile
+.nodeploy

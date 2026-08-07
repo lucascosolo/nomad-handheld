@@ -1,0 +1,91 @@
+You are helping me build Nomad, a modular pocket computer / AI assistant based on a Raspberry Pi 4 (4 GB).
+
+Hardware:
+- Raspberry Pi 4: main computer, Linux, Nomad Core, AI, tools, storage, camera, sensors
+- Main microSD card goes in the Raspberry Pi
+- ESP32-S3 touchscreen: display, touch, microphone, speaker, physical controls; connected to Pi over USB, likely USB CDC serial
+- ESP32-S3 microSD slot is optional and should not be treated as primary storage
+- RP2040-Zero: dedicated external USB HID controller for keyboard/mouse emulation
+- PiSugar S Plus: battery/power management
+- Future hardware: Pi camera, IMU, ToF, SDR/radio, GPS, other sensors
+
+Design goals:
+- modular monolith, not microservices
+- Python
+- lightweight enough for Pi 4
+- hardware abstraction
+- plugin/tool architecture
+- internal event bus
+- FastAPI HTTP/WebSocket API
+- SQLite storage
+- TOML config
+- structured logging
+- AI-provider abstraction
+- mock hardware so development works without physical devices
+
+Security:
+- AI must never get unrestricted shell/device control by default
+- tools declare permissions/risk
+- separate request -> authorization -> execution -> result
+- read-only tools may auto-run
+- privileged, destructive, or external-device actions require authorization
+
+Create these context files first:
+- CLAUDE.md
+- docs/ARCHITECTURE.md
+- docs/HARDWARE.md
+- docs/PROTOCOL.md
+- docs/ROADMAP.md
+- docs/DECISIONS.md
+
+Document the roles of the Pi, ESP32-S3, RP2040, battery system, storage, hardware abstraction, permissions, and future expansion.
+
+Then build a small software skeleton with modules roughly for:
+- core/lifecycle/events/config
+- api
+- assistant/providers
+- tools/registry/permissions
+- hardware/display
+- hardware/usb_hid
+- hardware/battery
+- hardware/camera
+- hardware/sensors
+- hardware/transports
+- protocol
+- storage
+
+Initial vertical slice:
+1. Start Nomad Core.
+2. Start FastAPI.
+3. GET /health.
+4. GET /api/v1/system.
+5. Implement a tool registry.
+6. Implement get_system_info as a read-only tool.
+7. Implement an event bus.
+8. Initialize mock display, HID, battery, camera, and sensors.
+9. Add a WebSocket event endpoint.
+10. Add a mock AI provider that can respond to “What system are you running on?” by invoking get_system_info through the normal tool/permission pipeline.
+11. Add tests for events, tools, permissions, API, and mock assistant flow.
+
+Prefer:
+- FastAPI
+- Uvicorn
+- Pydantic
+- pytest
+
+Avoid unnecessary infrastructure such as Redis, Celery, Kafka, Kubernetes, Docker Compose, or dependency-injection frameworks.
+
+Important protocol design:
+- Pi <-> ESP32-S3 should use an abstract transport, initially USB serial
+- Pi <-> RP2040 should also use an abstract transport
+- logical messages can initially be JSON but must not be permanently coupled to JSON
+
+Work in two phases.
+
+Phase 1:
+Propose the repository structure, interfaces, dependencies, message flow, and important architectural decisions. Identify anything expensive to change later. Keep this concise.
+
+Phase 2:
+After approval, create the docs, project skeleton, first working vertical slice, tests, and README.
+
+Do not try to build all Nomad features now. Build a clean foundation that can grow without major rewrites.

@@ -1,0 +1,93 @@
+# Nomad default configuration.
+#
+# Layered: this file -> nomad.local.toml (gitignored, per-device) -> NOMAD_* env.
+# Copy any section you want to change into nomad.local.toml; do not edit this
+# file for device-specific values.
+
+[core]
+name = "nomad"
+data_dir = "var"
+log_level = "INFO"
+log_format = "console"   # "console" | "json"
+
+[api]
+host = "127.0.0.1"       # localhost only until the API has auth (see ROADMAP)
+port = 8080
+
+[storage]
+path = "var/nomad.db"
+
+[agent]
+# Permission mode: manual | session | smart | auto  (D14)
+mode = "manual"
+# Turn budget before the loop parks and asks to continue.
+max_tool_calls_per_turn = 25
+# Context compaction triggers at this fraction of the model's window. (D16)
+compact_at = 0.75
+
+[workspace]
+# Filesystem tools are confined to this root. (D15)
+root = "var/workspace"
+follow_symlinks_outside_root = false
+
+[tools]
+# Arbitrary command execution. Disabled by default; never auto-runs even when
+# enabled. (D5)
+enable_run_command = false
+command_timeout_seconds = 120
+
+[ai]
+provider = "mock"        # mock | cloud | local
+routing = "static"       # static | auto  (auto considers network + battery, D17)
+
+[ai.cloud]
+model = "claude-sonnet-5"
+# API key comes from the environment, never this file.
+api_key_env = "ANTHROPIC_API_KEY"
+
+[ai.local]
+enabled = false
+model_path = ""
+
+[display]
+driver = "mock"          # mock | esp32
+width = 320
+height = 240
+
+[usb_hid]
+driver = "mock"          # mock | rp2040
+
+[battery]
+driver = "mock"          # mock | pisugar
+# Below this percentage the agent defers background work. (D18)
+low_threshold = 20
+critical_threshold = 8
+
+[camera]
+driver = "mock"          # mock | picamera
+
+[sensors]
+driver = "mock"
+
+[transports.esp32]
+kind = "mock"            # mock | serial
+port = "/dev/ttyACM0"
+baudrate = 921600
+
+[transports.rp2040]
+kind = "mock"            # mock | serial
+port = "/dev/ttyACM1"
+baudrate = 115200
+
+# Physical -> logical input mapping. (D13)
+# No application code may reference the left-hand side of these entries.
+[input.buttons]
+a = "CONFIRM"
+b = "BACK"
+x = "ACTION_1"
+y = "ACTION_2"
+
+[input.joystick]
+deadzone = 0.25
+repeat_delay_ms = 400
+repeat_interval_ms = 120
