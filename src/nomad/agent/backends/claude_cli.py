@@ -100,7 +100,7 @@ class ClaudeCliBackend:
         bridge: PermissionBridge,
         router: McpToolRouter | None = None,
         cwd: str | None = None,
-        system_prompt: str | None = None,
+        identity: str | None = None,
         extra_args: dict[str, Any] | None = None,
         resume_session_id: str | None = None,
         env: dict[str, str] | None = None,
@@ -110,7 +110,7 @@ class ClaudeCliBackend:
         self._bridge = bridge
         self._router = router
         self._cwd = cwd
-        self._system_prompt = system_prompt
+        self._identity = identity
         self._extra_args = dict(extra_args or {})
         self._resume_session_id = resume_session_id
         self._env = env
@@ -171,6 +171,22 @@ class ClaudeCliBackend:
         handler.__name__ = f"nomad_{name}"
         return handler
 
+    def _system_prompt(self) -> Any:
+        """Nomad's identity, appended to Claude Code's preset — never replacing it.
+
+        The preset is the reason this backend is worth having at all (D19).
+        Passing a bare string here would *substitute* for it, trading Claude
+        Code's competence at the actual work for a personality blurb. So the
+        identity is an append, and a device with no identity file still gets
+        the preset rather than nothing.
+
+        The dict shape is the SDK's, and it is built here on purpose: this is
+        the one module allowed to know what the SDK wants (D24).
+        """
+        if not self._identity:
+            return {"type": "preset", "preset": "claude_code"}
+        return {"type": "preset", "preset": "claude_code", "append": self._identity}
+
     def _options(self) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
@@ -180,7 +196,7 @@ class ClaudeCliBackend:
             model=self._cli.model or None,
             cli_path=self._cli.cli_path or None,
             cwd=self._cwd,
-            system_prompt=self._system_prompt,
+            system_prompt=self._system_prompt(),
             env=self._env if self._env is not None else child_environment(self._cli),
             # Explicit identity, never `continue_conversation` (D20).
             session_id=self._session_id or None,

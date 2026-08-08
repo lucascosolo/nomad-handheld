@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from nomad.agent.backends.base import (
     AgentBackend,
     AgentEvent,
@@ -10,6 +12,7 @@ from nomad.agent.backends.base import (
 )
 from nomad.agent.backends.mock import MockBackend
 from nomad.agent.backends.remote_llm import RemoteLlmBackend
+from nomad.agent.identity import load_identity
 from nomad.agent.permission_bridge import PermissionBridge
 from nomad.core.config import AgentBackendKind, NomadConfig
 from nomad.core.errors import AgentError
@@ -49,6 +52,12 @@ def create_backend(
     if kind is AgentBackendKind.REMOTE_LLM:
         return RemoteLlmBackend(config=config.agent.remote_llm)
 
+    identity = load_identity(
+        Path(config.agent.claude_cli.identity_path)
+        if config.agent.claude_cli.identity_path
+        else None
+    )
+
     if kind is AgentBackendKind.CLAUDE_CLI:
         if bridge is None:
             # Refusing here rather than defaulting to "no gate" is the whole of
@@ -65,6 +74,7 @@ def create_backend(
             bridge=bridge,
             router=router,
             cwd=cwd,
+            identity=identity,
             resume_session_id=resume_session_id,
         )
 

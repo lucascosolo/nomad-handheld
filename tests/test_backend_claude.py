@@ -21,6 +21,7 @@ from nomad.agent.backends.claude_cli import (
 )
 from nomad.agent.backends.mock import MockBackend
 from nomad.agent.backends.remote_llm import RemoteLlmBackend
+from nomad.agent.identity import FALLBACK_IDENTITY, load_identity
 from nomad.core.config import (
     AgentBackendKind,
     ClaudeCliConfig,
@@ -91,6 +92,50 @@ def test_capability_switches_are_config_driven() -> None:
     )
     assert config.agent.claude_cli.skills == ["deploy"]
     assert config.agent.claude_cli.strict_mcp_config is True
+
+
+# -- the Nomad identity (goal (a)) ------------------------------------------
+
+
+def test_the_identity_is_appended_to_the_preset_never_substituted() -> None:
+    """Replacing Claude Code's prompt would trade competence for personality."""
+    backend = ClaudeCliBackend(
+        cli_config=ClaudeCliConfig(),
+        bridge=None,  # type: ignore[arg-type]
+        identity="You are Nomad.",
+    )
+    prompt = backend._system_prompt()  # noqa: SLF001 - pinning the contract
+    assert prompt["type"] == "preset"
+    assert prompt["preset"] == "claude_code"
+    assert prompt["append"] == "You are Nomad."
+
+
+def test_no_identity_still_gets_the_preset() -> None:
+    backend = ClaudeCliBackend(cli_config=ClaudeCliConfig(), bridge=None)  # type: ignore[arg-type]
+    assert backend._system_prompt() == {"type": "preset", "preset": "claude_code"}  # noqa: SLF001
+
+
+def test_the_shipped_identity_file_loads_and_says_who_nomad_is() -> None:
+    text = load_identity()
+    assert "Nomad" in text
+    assert text != FALLBACK_IDENTITY, "NOMAD.md is missing or empty at the source root"
+
+
+def test_a_missing_identity_file_falls_back_rather_than_booting_mute(tmp_path) -> None:
+    assert load_identity(tmp_path / "absent.md") == FALLBACK_IDENTITY
+
+
+def test_an_empty_identity_file_falls_back(tmp_path) -> None:
+    path = tmp_path / "NOMAD.md"
+    path.write_text("   \n")
+    assert load_identity(path) == FALLBACK_IDENTITY
+
+
+def test_the_identity_teaches_the_small_screen_output_contract() -> None:
+    """The display tool's schema is not the only ceiling on how Nomad answers."""
+    text = load_identity().lower()
+    assert "screen" in text
+    assert "lead with the answer" in text
 
 
 # -- D24: the interface ------------------------------------------------------

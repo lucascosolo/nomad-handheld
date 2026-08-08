@@ -39,7 +39,8 @@ from nomad.core.errors import NomadError
 from nomad.core.events import Event, EventBus
 from nomad.core.logging import get_logger
 from nomad.targets.base import Capability
-from nomad.tools.base import ToolSpec
+from nomad.tools.base import Permission, ToolSpec
+from nomad.tools.egress import Egress, classify_params
 from nomad.tools.permissions import (
     AuthorizationGrant,
     AuthorizationQueue,
@@ -98,6 +99,7 @@ class PermissionBridge:
         vault: GrantVault | None = None,
         target_id: str = "local",
         hid_target_id: str = "hid",
+        ssh_target_id: str = "ssh",
         timeout: float = DEFAULT_BRIDGE_TIMEOUT,
     ) -> None:
         self._broker = broker
@@ -114,6 +116,7 @@ class PermissionBridge:
         self._vault = GrantVault() if vault is None else vault
         self._target_id = target_id
         self._hid_target_id = hid_target_id
+        self._ssh_target_id = ssh_target_id
         self._timeout = timeout
 
     @property
@@ -172,9 +175,15 @@ class PermissionBridge:
                 name, f"'{name}' has no permission declaration in Nomad; refusing"
             )
 
+        target_id = self._target_for(tool.spec, tool_input)
+        if target_id is None:
+            # D21: a call that cannot be classified cannot be scoped, so it
+            # cannot be allowed. An unbalanced quote is not a reason to guess.
+            return await self._denied(name, "command could not be parsed; refusing to classify")
+
         request = ToolRequest(
             tool=name,
-            target_id=self._target_for(tool.spec),
+            target_id=target_id,
             params=dict(tool_input),
             session_id=self._session_id(),
             turn_id=self._turn_id(),
@@ -192,17 +201,30 @@ class PermissionBridge:
         grant = await self._broker.authorize(request, decision)
         return self._allow(request, grant, decision.reason)
 
-    def _target_for(self, spec: ToolSpec) -> str:
-        """Which target this call lands on (D12).
+    def _target_for(self, spec: ToolSpec, tool_input: dict[str, Any]) -> str | None:
+        """Which target this call lands on (D12). `None` means unclassifiable.
 
         Derived from the spec's declared capabilities rather than from the
         tool's name, so a HID tool cannot be routed at the local machine by
         naming it something innocuous. If no HID target is registered the id
         simply does not resolve and the broker denies — the right answer for a
         device with nothing plugged into it.
+
+        Capabilities alone are not enough for a shell, though. Claude Code
+        reaches another machine as `Bash("ssh host ...")`, which declares no
+        SSH capability and would otherwise be a local call — bypassing D21's
+        "anything on an SSH target is never_auto" through the front door. So an
+        exec-capable tool is also classified by its command text
+        (`tools/egress.py`).
         """
         if Capability.HID_OUTPUT in spec.required_capabilities:
             return self._hid_target_id
+        if Permission.EXEC in spec.permissions:
+            egress = classify_params(tool_input)
+            if egress is Egress.UNCLASSIFIABLE:
+                return None
+            if egress is Egress.REMOTE:
+                return self._ssh_target_id
         return self._target_id
 
     async def _escalate(

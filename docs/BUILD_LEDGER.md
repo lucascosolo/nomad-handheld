@@ -13,22 +13,21 @@ Read this first after a compaction.
 companion. Claude Code is the agent loop *today*, behind a swappable interface,
 with a local LLM over Tailscale as the eventual backend (D19, D24).
 
-**Where things stand:** branch `main`, clean tree. `core`, `storage`, `targets`
-and `tools` (including the whole permission pipeline) are built and green —
-**183 tests passing, ruff clean**, verified by the coordinating session rather
-than self-reported. `agent/` still contains the pre-pivot `loop.py`,
-`context.py` and `provider.py`, which D19 retires; chunk G replaces them.
-Nothing else is built yet.
+**Where things stand:** branch `main`. `core`, `storage`, `targets`, `tools`
+(the whole permission pipeline), and now `agent/` and `mcp/` are built and green
+— **292 tests passing, ruff clean**, verified by the coordinating session rather
+than self-reported. Chunks A–D, G and G2 are DONE. No hardware is wired up yet,
+and that is the plan: the entire stack is built and tested against mock drivers,
+and the peripherals get soldered on once the software is ready.
 
-**Next action:** dispatch chunk G. Its brief must carry, because none of it is
-inferable from the code: the `AgentBackend` Protocol and `BackendCapability`
-enum (D24); a `mock` backend as the default plus backend selection from
-`[agent].backend`; a test enforcing that `claude-agent-sdk` is imported in
-exactly one module; the rule that no SDK type crosses the backend boundary; the
-ban on `--bare`; active stripping of `ANTHROPIC_API_KEY` from the child
-environment; explicit `--session-id`/`--resume` rather than `--continue`; a
-fail-closed `can_use_tool` bridge; and the `never_auto` rule denying writes to
-Nomad's own source tree.
+**Next action:** chunk E, with two additions the original brief did not have.
+First, a **headless display surface** alongside the mock, so app authoring and
+the UI shell are demoable with no hardware attached. Second, a **richer display
+vocabulary** than `display_text` — `display_card`, `display_list`,
+`display_choice` — because that tool schema is the ceiling on what the model can
+imagine its own face doing, and every self-authored app inherits it. Also settle
+the audio path before ratifying the wire format: PCM does not fit on the display
+link (see the review below).
 
 **Machine constraints, learned the hard way:** this laptop has 2 CPUs and
 ~3.8 GB RAM. One subagent at a time, never two heavy commands at once, and run
@@ -50,15 +49,90 @@ them. More files meant more places for the contract to drift.
 | B | Remaining docs written against DECISIONS.md | `docs/ARCHITECTURE.md` | consistent with D1–D26 | **DONE** (consolidated) |
 | C | Core: errors, logging, config, events, lifecycle, storage | `src/nomad/core/**`, `src/nomad/storage/**`, matching tests | `pytest tests/{test_events,test_config,test_storage,test_lifecycle}.py` | **DONE** |
 | D | Security layer: targets, tools, permissions, agent session | `src/nomad/targets/**`, `src/nomad/tools/**`, `src/nomad/agent/**`, matching tests | `pytest tests/{test_targets,test_tools,test_permissions,test_agent_loop,test_workspace}.py` | **DONE** |
-| G | **PIVOT (D19–D21, D24):** swappable `AgentBackend`; Claude CLI backend; broker becomes `can_use_tool`; hardware as MCP | `src/nomad/agent/**` (rewrite), `src/nomad/tools/builtin/**` (retire fs tools), `src/nomad/mcp/**`, `tests/test_backend_*.py`, `tests/test_permission_bridge.py`, `tests/test_mcp_hardware.py` | `pytest tests/{test_backend_claude,test_permission_bridge,test_mcp_hardware,test_permissions}.py` | TODO |
+| G | **PIVOT (D19–D21, D24):** swappable `AgentBackend`; Claude CLI backend; broker becomes `can_use_tool`; hardware as MCP | `src/nomad/agent/**` (rewrite), `src/nomad/tools/builtin/**` (retire fs tools), `src/nomad/mcp/**`, `tests/test_backend_*.py`, `tests/test_permission_bridge.py`, `tests/test_mcp_hardware.py` | `pytest tests/{test_backend_claude,test_permission_bridge,test_mcp_hardware,test_permissions}.py` | **DONE** |
+| G2 | **Review fallout (D27, D28):** egress classification of shell commands; Nomad's identity appended to the preset | `src/nomad/tools/egress.py`, `src/nomad/agent/identity.py`, `NOMAD.md`, `tests/test_egress.py` | `pytest tests/{test_egress,test_permission_bridge,test_backend_claude}.py` | **DONE** |
 | E | Peripherals: protocol, transports, hardware, input | `src/nomad/protocol/**`, `src/nomad/hardware/**`, `src/nomad/input/**`, matching tests | `pytest tests/{test_protocol,test_hardware,test_input}.py` | TODO |
-| I | **Self-upgrade (D25, D26):** app registry + manifest + supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
+| M | **Memory Nomad owns (D30):** durable owner memory + `remember`/`recall`/`forget` MCP tools; session rollover carries it forward | `src/nomad/memory/**`, migration, `tests/test_memory.py` | `pytest tests/test_memory.py` | TODO |
+| N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | TODO |
+| V | **Voice:** `Recorder`/`Speaker`/`Transcriber` protocols with mock defaults, `push_to_talk` action, audio on the Pi — never the ESP32 link | `src/nomad/audio/**`, `tests/test_audio.py` | `pytest tests/test_audio.py` | TODO |
+| P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
+| I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | F | Wire-up: API, `__main__`, composition root, layering test, README | `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
 
-Ordering: A → B → C → D → **G** → E → I → F → H. **Sequential only** — this
-laptop cannot afford concurrent subagents. I needs E, because apps draw to the
-display and consume logical input.
+Ordering: A → B → C → D → G → G2 → **E** → M → N → V → P → I → F → H.
+**Sequential only** — this laptop cannot afford concurrent subagents. I needs E,
+because apps draw to the display and consume logical input. M, N, V and P were
+added after the adversarial review below and are not optional polish: without
+them the finished device is a Claude Code terminal in a Game Boy shell, and the
+shell makes it worse than the laptop.
+
+## The adversarial review (2026-08-08)
+
+An adversarial critic read the four docs and the source after chunk G landed and
+was asked one question: would a stranger holding the finished device think it
+was science fiction? **Verdict: no.** The reasoning is worth keeping, because it
+is a critique of the *plan*, not of the code, and the code is fine:
+
+> They press a button. Nothing accepts text — D13's logical actions cannot
+> express a character, so they thumb an on-screen keyboard on a 320×240 screen
+> with a joystick. Then they wait a full Claude Code turn for "what time is it".
+> Then the answer arrives as laptop-sized prose in the one display tool that
+> exists. Then it goes in a pocket and does nothing, ever, until poked again. It
+> never speaks first, has no memory of them it owns, and does not know the time.
+
+The device-specific surface — the only thing a laptop cannot do — was three
+tools: `display_text`, `read_battery`, `hid_type_text`.
+
+What that produced, in order of leverage:
+
+1. **Voice (chunk V).** A keyboardless device with no voice has no input method;
+   every other improvement is downstream of the operator being able to speak.
+   Audio runs on the Pi, **not** over the ESP32 link — 16 kHz mono is 256 kbps
+   before framebuffer deltas, and ARCHITECTURE.md's draft protocol currently puts
+   `audio.mic_stream` on the same 921600-baud CDC link as `display.draw`. Decide
+   the audio path before ratifying that table.
+2. **Memory Nomad owns (chunk M, D30).** D19 retired `agent/context.py` because
+   Claude Code compacts better. True for a coding session, false for "remembers
+   the owner across two years". Today the owner's long-term memory *is* the
+   Claude Code transcript — compacted by rules Nomad does not control, stored
+   outside Nomad's SQLite, and destroyed by a session-id rotation or a CLI
+   upgrade. That was recorded as one decision and it was two.
+3. **Identity and a real display vocabulary (D28, done).** Half of this shipped
+   in G2. The other half remains: `display_text` is the whole face, and a tool
+   schema is the ceiling on what the model can imagine its face doing. Add
+   `display_card`, `display_list`, `display_choice` in chunk E.
+4. **Proactivity (chunk P).** `AgentSession.send()` is the only way a turn
+   begins, so nothing can start one the operator did not type — and if it could,
+   the transcript could not tell the difference. Turn provenance is cheap now and
+   expensive once the transcript format is set.
+5. **Durable notifications (chunk N).** D6 makes `EventBus` drop slow
+   subscribers on purpose. Correct for a display, catastrophic for "your build
+   failed". Notifications must be a durable row, and nothing currently
+   distinguishes the two.
+6. **A designed escape hatch for `never_auto` Bash.** `never_auto=True` is
+   hard-coded on the `Bash` spec and cannot be relaxed by config at all. On day
+   three of real use somebody will delete that line, and they will delete it
+   badly. Design the relaxation as a reviewable `CommandPolicy` — argv[0]
+   allowlist, no shell metacharacters, cwd inside the workspace — consulted
+   inside `tools/permissions.py`. **It must consult D27's egress classifier**,
+   or relaxing Bash reopens the SSH hole G2 just closed.
+7. **Ambient context (chunk N).** "Understands my needs" is mostly knowing what
+   time it is and whether the operator is moving. Nearly free, fully mockable,
+   and it is what lets a trigger fire sensibly instead of at random.
+8. **Out-of-process apps (D29, decided).** In-process model-authored apps void
+   the entire broker. Fixed on paper before chunk I writes a line.
+9. **Demoable with no hardware.** The ledger put I after E, which parks the
+   flagship demo — "make me a game" — behind unbuilt hardware. Chunk E must ship
+   a headless/web display surface so app authoring is exercisable today.
+10. **An offline path.** No network means the device is a brick. A small local
+    model for wake-word, timers, notes and notification readout is the
+    difference between "alive" and "off". Note that deleting `[ai]` in chunk A's
+    re-close removed the bad `api_key_env` **and** the model-routing concept;
+    routing now has no home in the config model.
+
+Two findings were code, not plan, and are fixed: the SSH `never_auto` bypass
+(D27) and the unimplemented identity (D28). Both shipped in G2 with tests.
 
 **Chunk G supersedes part of D.** `agent/loop.py` and `agent/context.py` are
 retired by D19; the permission pipeline, targets and all of `core` carry over

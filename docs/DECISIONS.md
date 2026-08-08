@@ -502,11 +502,15 @@ before it appears on the home screen: manifest schema validates, module imports
 cleanly, declared entry point exists, and a smoke-launch survives N seconds. Fail
 any step and it is quarantined with the error surfaced — never registered.
 
-**Crash isolation:** apps run as supervised asyncio tasks with exception
-isolation and a watchdog; a crashing app returns the user to the home screen and
-must never take Nomad down. Subprocess isolation is the upgrade path if an app
-ever needs a hard memory boundary — the supervisor interface is designed so that
-swap does not change callers.
+**Crash isolation:** a crashing app returns the user to the home screen and must
+never take Nomad down.
+
+> **Superseded in part by D29.** This decision originally ran apps as supervised
+> asyncio tasks in Nomad's own process, with subprocess isolation named as "the
+> upgrade path". That was wrong, and not for performance reasons: an app written
+> by the model, running in Nomad's process, reaches the whole machine with one
+> `import os` and never passes the broker. In-process apps do not weaken D21,
+> they delete it. D29 makes the process boundary part of the contract.
 
 Apps consume logical input actions only (D13) and draw through the display
 abstraction — never a GPIO pin, never the framebuffer directly. This is why D13
@@ -582,6 +586,108 @@ the systemd unit, and verify the install by starting the service and hitting
 `/health`. It fails loudly with a specific remedy rather than half-installing.
 
 *Cost to change:* Low.
+
+---
+
+## D27 — A shell command is classified by where its effects land
+
+**Accepted.** Found by an adversarial review of the shipped chunk-G code, not by
+a test.
+
+D12 says tools act on a `Target`, and D21 says anything on an SSH target is
+`never_auto`. Both were true of Nomad's own tools, where the request names its
+target. Neither was true of the path the model actually takes: Claude Code does
+not call an `ssh` *tool*, it calls `Bash("ssh prod 'rm -rf /'")`. Routed on
+declared capabilities alone that is a **local** call, so the SSH guarantee was
+bypassed on day one — not by an attack, by the ordinary way the tool works.
+
+So `tools/egress.py` classifies an exec-capable tool call by the binaries its
+command invokes. Any token whose basename is a remote-execution binary (`ssh`,
+`scp`, `rsync`, `mosh`, `nc`, `socat`, `kubectl`, …) routes the call to the SSH
+target, which carries `never_auto` and a remote identity rather than the
+device's.
+
+Three properties are load-bearing:
+
+- **Every token is scanned**, not just the first: `cat x | ssh host sh` and
+  `cd /tmp && ssh host` both reach another machine.
+- **A command that will not tokenise is `UNCLASSIFIABLE`, and the bridge
+  denies it.** An unbalanced quote is not a reason to guess "local" (D21).
+- **A non-string `command` is unclassifiable too.** Routing happens before the
+  params model validates, so it must not fall through to local.
+
+The classifier is blunt and over-eager on purpose: a false positive costs a
+prompt, a false negative costs an unapproved shell on someone else's machine.
+
+*Note:* this is what keeps the SSH guarantee true **while `Bash` is
+`never_auto`**. Any future relaxation of that (a narrow allowlist for innocuous
+commands) must consult this classifier first, or it reopens the hole it closed.
+
+*Cost to change:* Low.
+
+---
+
+## D28 — Nomad's identity is appended to Claude Code's prompt, never substituted
+
+**Accepted.**
+
+The goal is "a Claude Code session with a Nomad identity". Until this decision
+the second half was simply not implemented: the backend accepted a
+`system_prompt` and nothing ever passed one, so the device's brain believed it
+was a terminal on a laptop and answered accordingly — walls of prose, for a
+320×240 screen and a joystick.
+
+The fix is `NOMAD.md` at the source root, loaded by `agent/identity.py` and sent
+as an **append** to the `claude_code` preset. Replacing the preset was the
+tempting shape and is the wrong one: that preset is the reason D19 chose this
+backend at all, and swapping it for a personality blurb trades competence at the
+actual work — the hard thing — for tone, the easy thing.
+
+`NOMAD.md` is **data, not code**: the operator edits it without a release, and
+Nomad can read it (reading its own source is allowed; writing is `never_auto`).
+It carries three things the model cannot infer — what body it has, how to answer
+on a screen a few inches across, and which actions the broker will refuse.
+
+A missing or empty file logs a warning and falls back to a built-in minimum. A
+device that boots without a personality must still boot, but silently losing its
+identity is exactly the bug this decision fixes, so it must be noisy.
+
+*Cost to change:* Low.
+
+---
+
+## D29 — Self-authored apps run in their own process (supersedes part of D25)
+
+**Accepted.**
+
+D25 said apps run as supervised asyncio tasks, with subprocess isolation as "the
+upgrade path if an app ever needs a hard memory boundary". That framing missed
+the actual stake. An app under `var/apps/` is **written by the model**, and an
+app running inside Nomad's process needs one line — `import os; os.system(...)`
+— to reach the whole machine without passing `can_use_tool`. Every guarantee in
+D4, D14, D15 and D21 is enforced at the broker, and in-process code is on the
+wrong side of it.
+
+So the process boundary is part of the contract from the first app, not an
+optimisation:
+
+- An app runs as a **child process** with its own interpreter, and talks to
+  Nomad over an IPC channel carrying the same logical vocabulary it would have
+  had in-process: logical input actions in (D13), display operations out (D3).
+- **An app has no tool access except through that channel**, and everything it
+  asks for crosses the broker exactly as a model tool call does. An app's
+  declared manifest permissions are a *ceiling* on what it may request, never a
+  grant.
+- A crashed, wedged or over-budget app is killed by the supervisor and returns
+  the operator to the home screen. This was the original crash-isolation
+  requirement and it gets easier, not harder, with a real boundary.
+
+The cost is real — IPC, serialisation, slower app start, no shared objects — and
+it is worth paying, because the alternative is a permission architecture that a
+generated Python file can step around.
+
+*Cost to change:* High once apps exist. This is why it is decided before chunk I
+rather than after the first app is written.
 
 ---
 

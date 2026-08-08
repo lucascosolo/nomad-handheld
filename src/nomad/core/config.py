@@ -87,6 +87,10 @@ class ClaudeCliConfig(BaseModel):
     #: no declaration in `agent/claude_tools.py`, so the bridge denies them
     #: until one is added — fail-closed survives the relaxation (D21).
     strict_mcp_config: bool = False
+    #: Nomad's identity, *appended* to Claude Code's preset rather than
+    #: replacing it — the preset is why the laptop version is good at the work
+    #: (D19). Empty means the source root's `NOMAD.md`.
+    identity_path: str = ""
 
 
 class RemoteLlmConfig(BaseModel):
