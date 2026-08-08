@@ -14,27 +14,33 @@ companion. Claude Code is the agent loop *today*, behind a swappable interface,
 with a local LLM over Tailscale as the eventual backend (D19, D24).
 
 **Where things stand:** branch `main`. `core`, `storage`, `targets`, `tools`
-(the whole permission pipeline), and now `agent/` and `mcp/` are built and green
-— **292 tests passing, ruff clean**, verified by the coordinating session rather
-than self-reported. Chunks A–D, G and G2 are DONE. No hardware is wired up yet,
-and that is the plan: the entire stack is built and tested against mock drivers,
-and the peripherals get soldered on once the software is ready.
+(the whole permission pipeline), `agent/`, `mcp/`, and now `protocol/`,
+`hardware/` and `input/` are built and green — **368 tests passing, ruff
+clean**, verified by the coordinating session rather than self-reported. Chunks
+A–D, G, G2, E1, E2 and E3 are DONE.
 
-**Next action:** chunk E, with two additions the original brief did not have.
-First, a **headless display surface** alongside the mock, so app authoring and
-the UI shell are demoable with no hardware attached. Second, a **richer display
-vocabulary** than `display_text` — `display_card`, `display_list`,
-`display_choice` — because that tool schema is the ceiling on what the model can
-imagine its own face doing, and every self-authored app inherits it. Also settle
-the audio path before ratifying the wire format: PCM does not fit on the display
-link (see the review below).
+**No hardware is wired up yet, and that is the plan.** The entire stack is built
+and tested against mock drivers; the screen, buttons, joystick, RP2040 and
+PiSugar get soldered on in a later session, once the software is ready. Nothing
+in the suite needs a serial port, a credential or a pin. `HeadlessDisplay`
+exists so the parts that draw can still be watched while that is true.
 
-**Machine constraints, learned the hard way:** this laptop has 2 CPUs and
-~3.8 GB RAM. One subagent at a time, never two heavy commands at once, and run
-tests as `nice -n 19 .venv/bin/python -m pytest <files> -q -p no:cacheprovider`
-— no xdist, no type-checker. `pip install claude-agent-sdk` runs alone in the
-foreground when chunk G needs it. The `.venv` already has every current
-dependency plus `nomad` as an editable install.
+**Next action:** chunk M (memory Nomad owns), then N, V, P — see the review
+below for why those four are not optional polish. Two things a brief for them
+must carry, because neither is inferable: session rollover has to carry
+distilled memory forward, since the Claude Code transcript is *not* storage
+Nomad controls; and notifications must be durable rows, because `EventBus`
+drops slow subscribers by design (D6) and the screen is off most of the time.
+
+**Machine constraints, learned the hard way:** 2 CPUs, ~3.8 GB RAM. One subagent
+at a time, never two heavy commands at once, and run tests as
+`nice -n 19 .venv/bin/python -m pytest <files> -q -p no:cacheprovider` — no
+xdist, no type-checker. Two subagents have now run out of budget mid-chunk and
+left tests unwritten; **always verify a subagent's work yourself before marking
+a chunk DONE**, and keep briefs to one package.
+
+The `.venv` already has every current dependency plus `nomad` as an editable
+install.
 
 **Docs are consolidated to four files** — `CLAUDE.md`, `docs/DECISIONS.md`,
 `docs/ARCHITECTURE.md`, `docs/BUILD_LEDGER.md`. `HARDWARE.md`, `PROTOCOL.md`,
