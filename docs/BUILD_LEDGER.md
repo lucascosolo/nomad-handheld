@@ -418,6 +418,57 @@ Also note `offline_asks` stores the operator's phrasings as plaintext SQLite —
 the same posture as notes and memories, so the known "encryption at rest" gap
 now covers one more table.
 
+## The second adversarial review (2026-08-08, after V/R/N/U/S/O)
+
+A fresh agent with **no session history** was given a read-only brief and told
+to default to "no". It re-ran the suite itself (`723 passed`, `ruff` clean)
+rather than trusting the claim, then went looking for what those numbers do not
+cover. **Verdict: no.** Not close.
+
+> A well-architected library with a composition root that boots, prints a URL,
+> and then waits for SIGTERM. A stranger picking this up today cannot start a
+> turn by any means. Not by voice, not by touch, not by typing.
+
+The five findings, all reproduced by booting the app rather than by reading:
+
+1. **No input path into the agent exists.** `AgentSession.send()` has exactly
+   one caller in `src/` — crash recovery replaying an aborted turn.
+2. **The input pipeline is severed from the transport.** `InputStream.feed_*`
+   has zero callers outside its own package, so with `mode = "manual"` as
+   shipped, every tool call needing approval is denied permanently *by
+   construction*. The broker fails closed correctly; the device authorizes
+   nothing.
+3. `display.driver = "esp32"` raises at construction — an option `nomad.toml`
+   advertises and the code cannot honour. (Failing loudly is right; advertising
+   it is the bug.)
+4. **Six tested subsystems are inert.** The live tool surface, enumerated from a
+   running app, was 13 tools and none from V/S/O. `build_voice_tools`,
+   `build_skill_tools`, `build_offline_tools`: zero callers.
+5. **Touch is discarded** at `input/choice.py:134`, and nothing else in `src/`
+   reads a `TouchEvent` — half the stated brief.
+
+Smaller, and all real: the D37 audio guard banned the `Recorder` *type* but not
+`create_recorder_driver` (**fixed**, bypass-verified); `ARCHITECTURE.md` put the
+mic on the ESP32 in one place and the Pi in another (**fixed**); D37 claimed
+composite USB firmware in the present tense (**fixed**); `test_layering.py:132`
+skips relative imports on the false premise that one "cannot cross a package"
+(`from ..agent import x` does — latent, zero relative imports today); and
+`egress.py:104` classifies `bash -c "ssh host rm -rf /"` as LOCAL because the
+inner command is one shlex token. That last one is harmless **only** because
+`Bash` is `never_auto=True`, and this ledger plans to relax exactly that — it is
+a trap set for a future change, not a bug today.
+
+For calibration it found the security model sound and said where: no path in
+`permission_bridge.py` reaches `allow` by falling off the end, `_target_for`
+classifies by declared capability so a HID tool cannot be renamed into a local
+call, and the `GrantVault` handoff makes approval and execution one fact rather
+than two joined by convention.
+
+**The lesson worth keeping: "documented as inert" is not "addressed."** This
+ledger stated plainly that V/R/N/U/S/O were built and unwired, and the reviewer
+credited that candour — then counted it as a defect anyway, correctly. Honest
+prose about a gap does not close the gap.
+
 ## Notes
 
 **A — DONE.** Design settled in conversation before any code was written. Key
