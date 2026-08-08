@@ -24,7 +24,7 @@ from nomad.targets.base import (
     TargetKind,
 )
 
-_UNIMPLEMENTED = "SSH target not implemented; see ROADMAP"
+_UNIMPLEMENTED = "SSH target not implemented; see docs/BUILD_LEDGER.md"
 
 
 class SshTarget:

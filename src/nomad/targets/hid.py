@@ -16,7 +16,7 @@ from collections.abc import Sequence
 
 from nomad.targets.base import Capability, TargetKind
 
-_UNIMPLEMENTED = "HID target not implemented; see ROADMAP"
+_UNIMPLEMENTED = "HID target not implemented; see docs/BUILD_LEDGER.md"
 
 
 class HidTarget:

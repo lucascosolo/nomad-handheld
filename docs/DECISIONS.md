@@ -590,7 +590,7 @@ the systemd unit, and verify the install by starting the service and hitting
 Not in the MVP, recorded so nobody assumes they were forgotten:
 
 - **HTTP API authentication.** Binds to localhost initially. Must be solved
-  before the API is exposed on a network — tracked in ROADMAP.
+  before the API is exposed on a network — tracked in docs/BUILD_LEDGER.md under "Known gaps".
 - **Plugin discovery via entry points.** The registry takes explicit
   registration first.
 - **Multi-user / multi-session concurrency.** One session per device for now.

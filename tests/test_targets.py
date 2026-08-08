@@ -93,7 +93,7 @@ def test_protocol_conformance() -> None:
 
 async def test_ssh_operations_raise_not_implemented(tmp_path: Path) -> None:
     target = SshTarget(alias="ws", host="h", user="u")
-    with pytest.raises(NotImplementedError, match="ROADMAP"):
+    with pytest.raises(NotImplementedError, match="BUILD_LEDGER"):
         await target.read_text(tmp_path / "x")
     with pytest.raises(NotImplementedError):
         await target.run_command("ls", cwd=tmp_path)
@@ -103,7 +103,7 @@ async def test_ssh_operations_raise_not_implemented(tmp_path: Path) -> None:
 
 async def test_hid_operations_raise_not_implemented() -> None:
     target = HidTarget()
-    with pytest.raises(NotImplementedError, match="ROADMAP"):
+    with pytest.raises(NotImplementedError, match="BUILD_LEDGER"):
         await target.send_text("hello")
     with pytest.raises(NotImplementedError):
         await target.send_keys(["ctrl", "c"])
