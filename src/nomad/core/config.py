@@ -207,6 +207,20 @@ class BatteryConfig(BaseModel):
     critical_threshold: int = 8
 
 
+class AudioConfig(BaseModel):
+    """Voice drivers (D37). Each category is selected independently, since a
+    device can gain a real speaker long before it has a real transcriber."""
+
+    recorder_driver: str = "mock"
+    speaker_driver: str = "mock"
+    transcriber_driver: str = "mock"
+    synthesizer_driver: str = "mock"
+    #: Hard ceiling on one `push_to_talk` capture, seconds. A stuck key still
+    #: cannot record forever — enforced by the driver, not by the operator
+    #: releasing the button (D37).
+    max_record_seconds: float = 30.0
+
+
 class CameraConfig(BaseModel):
     driver: str = "mock"
 
@@ -280,6 +294,7 @@ class NomadConfig(BaseModel):
     apps: AppsConfig = Field(default_factory=AppsConfig)
     settings: SettingsConfig = Field(default_factory=SettingsConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
+    audio: AudioConfig = Field(default_factory=AudioConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)
     usb_hid: UsbHidConfig = Field(default_factory=UsbHidConfig)
     battery: BatteryConfig = Field(default_factory=BatteryConfig)

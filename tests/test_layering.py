@@ -29,7 +29,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 #: Everything below the composition root. `app.py` may import all of it.
 EVERYTHING = {
     "core", "protocol", "storage", "targets", "hardware", "input",
-    "memory", "tools", "mcp", "agent", "view",
+    "memory", "tools", "mcp", "agent", "view", "audio",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -44,8 +44,12 @@ ALLOWED: dict[str, set[str]] = {
     "hardware": {"core", "protocol"},
     "input": {"core", "protocol"},
     "memory": {"core", "storage"},
+    # No "protocol" (D37): audio moves over its own USB Audio Class endpoint,
+    # never Nomad's wire codec, so a driver here is a leaf that opens a sound
+    # device directly. Widening this edge is exactly the regression D37 names.
+    "audio": {"core"},
     "tools": {"core", "storage", "targets"},
-    "mcp": {"core", "storage", "targets", "tools", "memory"},
+    "mcp": {"core", "storage", "targets", "tools", "memory", "audio"},
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary
     # and hold the `DisplayDriver` protocol; they own no state.

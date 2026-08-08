@@ -25,6 +25,7 @@ from nomad.mcp.server import (
     build_hardware_tools,
     register_hardware_tools,
 )
+from nomad.mcp.voice import SpeakParams, SpeakTool, build_voice_tools
 
 __all__ = [
     "SERVER_NAME",
@@ -40,6 +41,9 @@ __all__ = [
     "MockDisplay",
     "MockHid",
     "ReadBatteryTool",
+    "SpeakParams",
+    "SpeakTool",
     "build_hardware_tools",
+    "build_voice_tools",
     "register_hardware_tools",
 ]

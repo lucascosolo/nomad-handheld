@@ -27,6 +27,11 @@ ACTION_CONFIRM = "CONFIRM"
 ACTION_BACK = "BACK"
 ACTION_1 = "ACTION_1"
 ACTION_2 = "ACTION_2"
+#: Held to capture, released to stop (D37). Core rather than app-registered:
+#: it is the *only* path that may ever start a microphone recording, and the
+#: joystick/buttons are physically disconnected today, so this is driven from
+#: the touch/action layer directly rather than a physical mapping.
+ACTION_PUSH_TO_TALK = "PUSH_TO_TALK"
 
 CORE_ACTIONS: frozenset[str] = frozenset(
     {
@@ -38,6 +43,7 @@ CORE_ACTIONS: frozenset[str] = frozenset(
         ACTION_BACK,
         ACTION_1,
         ACTION_2,
+        ACTION_PUSH_TO_TALK,
     }
 )
 
