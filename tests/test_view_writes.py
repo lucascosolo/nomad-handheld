@@ -242,6 +242,22 @@ async def test_an_answer_reaches_the_prompter(rig: _Rig) -> None:
     assert rig.answered == [("good", 1)]
 
 
+async def test_a_boolean_is_not_an_option_index(rig: _Rig) -> None:
+    """`isinstance(True, int)` is True, and `choices[True]` is `choices[1]`.
+
+    An adversarial review posted `{"index": true}` at a live authorization
+    prompt and it selected the second option — "Approve once" — returning
+    `allow=True`. The token was still required, so it was never a bypass, but
+    it approved something on an answer the operator did not give, which is the
+    one thing this endpoint must never do.
+    """
+    for forged in (True, False):
+        status, _ = _post(rig.server.url + "answer", {"token": "good", "index": forged})
+        assert status == 400, f"a bool was accepted as an option index: {forged!r}"
+    await asyncio.sleep(0.05)
+    assert rig.answered == [], "a boolean resolved a prompt"
+
+
 async def test_dismiss_is_an_index_the_page_can_send(rig: _Rig) -> None:
     _post(rig.server.url + "answer", {"token": "good", "index": DISMISS_INDEX})
     await asyncio.sleep(0.05)

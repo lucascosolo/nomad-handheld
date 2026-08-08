@@ -573,7 +573,16 @@ class ScreenServer:
                     self._send_json(*server._start_turn(text.strip()[:_MAX_TEXT_CHARS]))
                     return
                 token, index = body.get("token"), body.get("index")
-                if not isinstance(token, str) or not isinstance(index, int):
+                # `isinstance(True, int)` is True, and `choices[True]` is
+                # `choices[1]` — posting `{"index": true}` silently selected
+                # the second option, which in an authorization prompt is a
+                # real answer the operator never gave. Booleans are rejected
+                # explicitly rather than coerced.
+                if (
+                    not isinstance(token, str)
+                    or isinstance(index, bool)
+                    or not isinstance(index, int)
+                ):
                     self._send_json(400, {"error": "token and index are required"})
                     return
                 self._send_json(*server._answer(token, index))

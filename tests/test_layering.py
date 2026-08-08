@@ -121,17 +121,32 @@ def _package_of(path: Path) -> str:
 
 
 def _nomad_imports(path: Path) -> set[str]:
-    """Top-level `nomad.<package>` names imported by one module."""
+    """Top-level `nomad.<package>` names imported by one module.
+
+    Relative imports are resolved rather than skipped. The comment that used
+    to sit here — "a relative import cannot cross a package" — was simply
+    false: from `nomad/audio/drivers.py`, `from ..protocol import codec` is
+    `nomad.protocol`, and it is exactly the edge D37 forbids. An adversarial
+    reviewer injected that line and the whole layering suite stayed green, so
+    every rule this module carries (nothing imports `api`, `tools` may not
+    import `agent`, the D37 and D39 boundaries) was decoration against anyone
+    who happened to write `from ..`.
+    """
     tree = ast.parse(path.read_text(), filename=str(path))
+    # `nomad.audio.drivers` -> ["nomad", "audio", "drivers"]; level 1 strips
+    # the module itself, level 2 strips its package, and so on.
+    here = ["nomad", *path.relative_to(SRC).with_suffix("").parts]
     found: set[str] = set()
     for node in ast.walk(tree):
         modules: list[str] = []
         if isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
-            if node.level:  # a relative import cannot cross a package
-                continue
-            modules = [node.module or ""]
+            if node.level:
+                base = here[: -node.level]
+                modules = [".".join([*base, node.module] if node.module else base)]
+            else:
+                modules = [node.module or ""]
         for module in modules:
             parts = module.split(".")
             if parts[0] == "nomad" and len(parts) > 1:
