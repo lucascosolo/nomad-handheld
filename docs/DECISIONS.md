@@ -1074,6 +1074,63 @@ its own throttling.
 
 ---
 
+## D39 — A skill is instructions, never authority
+
+Nomad needs a way to know *how* to do things — a checklist for a recurring
+task, the shape of a good morning briefing, how the operator likes their notes
+written. The obvious implementation is to put that knowledge in the system
+prompt, and it does not survive contact with a real device: the prompt is paid
+for on **every turn**, so knowledge that is useful once a week is billed a
+hundred times a day, and Claude Code's context is the scarcest resource on a
+machine already running a model, a display and a governor (D38).
+
+So skills use **progressive disclosure**, the same shape D33 chose for memory:
+
+- **Always in context:** a name and one line saying when to use it. That is the
+  whole index, and it is budgeted in characters, not "kept short" by
+  convention — an index that grows with the library is a tax on every turn,
+  which is exactly the failure D33 already fixed once.
+- **Loaded on request:** the body, when the model decides the one-liner
+  matches. One call, one skill.
+- **Referenced from the body:** anything bulkier — a long reference table, a
+  worked example — named by path in the body and read with the ordinary file
+  tools only if actually needed.
+
+The index is therefore the only thing that scales with the number of skills,
+and a skill nobody uses costs one line a turn instead of its whole body.
+
+**A skill carries no capability, and this is the load-bearing half.** Loading
+one returns *text*. Every action it describes still happens as a tool call
+through the broker, gated exactly as if the operator had asked for it directly
+(D4, D21). There is deliberately no such thing as a skill that is "allowed" to
+do something — a skill that could carry a permission would be a way to smuggle
+authority in as documentation, and the broker would be reading the model's own
+notes to decide what the model may do.
+
+Two consequences follow, and they point in opposite directions:
+
+- **Skills are cheap to self-author (D25).** A bad skill is bad advice, not a
+  bad capability, so Nomad writing its own skills is a much smaller bet than
+  Nomad writing its own tools. This is the cheap half of self-upgrading and it
+  should be used in preference to the expensive half.
+- **A skill body is untrusted text entering the model's context**, whether it
+  was model-authored or fetched. It is a prompt-injection surface, so a loaded
+  skill must never be able to widen what is permitted — no permission mode
+  changes, no `never_auto` relaxation, nothing the broker consults. The broker
+  does not read skills, and that is a structural property, not a rule anyone
+  has to remember. Installing one is an operator-approved act (D26).
+
+**A promoted offline capability picks the cheaper form.** When chunk O finds a
+pattern worth making native, "a skill that explains how" is a smaller change
+than "a tool that does it", and only the second one needs a `ToolSpec`, a risk
+level and a permission decision. Reach for the skill first.
+
+*Cost to change:* Low now. High once an index is being injected every turn and
+its budget is load-bearing, and higher still if any skill is ever consulted by
+the permission path — which is the thing this decision exists to forbid.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:
