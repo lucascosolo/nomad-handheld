@@ -29,6 +29,7 @@ from nomad.core.events import EventBus
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
 from nomad.hardware.selection import create_battery_driver, create_display_driver
+from nomad.input.choice import InputChoicePrompter, NullChoicePrompter
 from nomad.input.mapper import InputMapper
 from nomad.input.stream import InputStream
 from nomad.mcp.server import build_hardware_tools
@@ -41,7 +42,14 @@ from nomad.targets.local import LocalTarget
 from nomad.targets.registry import TargetRegistry
 from nomad.tools.builtin import build_default_registry
 from nomad.tools.workspace import Workspace
+from nomad.view.authprompt import (
+    AUTH_PROMPT_WRITER,
+    AuthorizationPrompter,
+    ChoicePrompter,
+    make_show,
+)
 from nomad.view.renderer import TurnRenderer
+from nomad.view.screen import ScreenOwner
 from nomad.view.server import ScreenServer
 
 logger = get_logger(__name__)
@@ -101,16 +109,21 @@ class NomadApp:
         self.display = create_display_driver(config.display)
         self.battery = create_battery_driver(config.battery)
         # The same display object the renderer draws on is the one the model's
-        # `display_*` tools reach. Two screens would be worse than none.
+        # `display_*` tools reach. Two screens would be worse than none — but
+        # one screen with two unarbitrated writers is what let streaming turn
+        # output paint over a live authorization prompt, so both of them now
+        # go through the one `ScreenOwner` (D36).
+        self.screen = ScreenOwner(self.display)  # type: ignore[arg-type]
         self.hardware_tools = build_hardware_tools(
-            display=self.display,  # type: ignore[arg-type]
+            display=self.screen.view("model"),  # type: ignore[arg-type]
             battery=self.battery,  # type: ignore[arg-type]
             store=self.memory if config.memory.enabled else None,
         )
 
-        self.renderer = TurnRenderer(self.display, bus=self.bus)  # type: ignore[arg-type]
+        self.renderer = TurnRenderer(self.screen.view("renderer"), bus=self.bus)  # type: ignore[arg-type]
         self.view: ScreenServer | None = self._build_view()
         self.input = InputStream(InputMapper(config.input))
+        self.prompter = self._build_prompter()
         self.session = AgentSession(
             config=config,
             bus=self.bus,
@@ -121,6 +134,16 @@ class NomadApp:
             workspace=self.workspace,
             memory=self.memory if config.memory.enabled else None,
             hardware_tools=self.hardware_tools,
+        )
+        # Built last because it resolves through the session, which is what
+        # supplies the permission mode the queue's `approve()` needs. Held
+        # here and nowhere else: this handle must never reach `ToolRegistry`,
+        # or `can_use_tool` would gate the question it is being asked (D36).
+        self.authprompt = AuthorizationPrompter(
+            bus=self.bus,
+            screen=self.screen,
+            prompter=self.prompter,
+            resolver=self.session,
         )
 
         for component in self._ordered_components():
@@ -152,14 +175,38 @@ class NomadApp:
             height=self._config.display.height,
         )
 
+    def _build_prompter(self) -> ChoicePrompter:
+        """Who answers a question on the glass — and the single owner of the
+        input stream.
+
+        `InputStream.events()` is a single-consumer generator: two readers
+        steal each other's presses, and a menu that misses every other press
+        is worse than one that misses all of them. So exactly one
+        `InputChoicePrompter` is ever constructed, here, and nothing else in
+        the tree is given `self.input`.
+
+        Which prompter is decided by the display driver, because on this
+        device they are the same fact: the joystick and the buttons are on the
+        ESP32 that is also the screen (D13, ARCHITECTURE). A headless screen
+        means nothing is feeding `self.input`, and `NullChoicePrompter` is the
+        honest answer for that — it still *draws* the question, and reports
+        `NO_OPERATOR` rather than a timeout, because retrying can never help
+        (D32).
+        """
+        show = make_show(self.screen.view(AUTH_PROMPT_WRITER))
+        if self._config.display.driver in _HEADLESS_DRIVERS:
+            return NullChoicePrompter(show=show)
+        return InputChoicePrompter(self.input, show=show)
+
     def _ordered_components(self) -> list[Component]:
         """Start order. Stop order is exactly its reverse (`ComponentRegistry`)."""
         components: list[Component] = [self.db, self.migrator, self.bus]
         if self.view is not None:
             components.append(self.view)
-        # The renderer subscribes, so it must be up before the session can
-        # publish a turn — and it must still be up while the session stops.
-        components.extend([self.renderer, self.input, self.session])
+        # The renderer and the authorization prompt subscribe, so both must be
+        # up before the session can publish a turn — and both must still be up
+        # while the session stops.
+        components.extend([self.renderer, self.authprompt, self.input, self.session])
         return components
 
     # -- lifecycle ---------------------------------------------------------

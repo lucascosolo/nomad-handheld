@@ -21,7 +21,9 @@ from nomad.core.errors import ConfigError, LifecycleError
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.errors import HardwareError
 from nomad.hardware.headless_display import HeadlessDisplay
+from nomad.input.choice import NullChoicePrompter
 from nomad.storage.migrations import MIGRATIONS, current_version
+from nomad.view.authprompt import AUTH_PROMPT_WRITER
 
 
 def _config(tmp_path: Path, **overrides: object) -> NomadConfig:
@@ -111,12 +113,68 @@ async def test_a_failed_start_leaves_no_socket_bound(
 
 
 async def test_the_model_and_the_renderer_share_one_screen(tmp_path: Path) -> None:
-    """Two screens would be worse than none: the operator would see the wrong one."""
+    """Two screens would be worse than none: the operator would see the wrong one.
+
+    They now share it *through* one `ScreenOwner` rather than by holding the
+    driver each — same single screen, plus an arbiter that can hand it to an
+    authorization prompt (D36).
+    """
     app = NomadApp(_config(tmp_path))
     assert isinstance(app.display, HeadlessDisplay)
     display_tool = next(t for t in app.hardware_tools if t.spec.name == "display_text")
-    assert display_tool._display is app.display  # type: ignore[attr-defined]
-    assert app.renderer._display is app.display  # type: ignore[attr-defined]
+    assert display_tool._display._owner is app.screen  # type: ignore[attr-defined]
+    assert app.renderer._display._owner is app.screen  # type: ignore[attr-defined]
+    assert app.screen.display is app.display
+
+
+async def test_the_authorization_prompt_is_not_reachable_as_a_tool(tmp_path: Path) -> None:
+    """D36: the broker must never be asked to approve its own question.
+
+    So the prompt is not in the registry, has no spec, and no registered tool
+    holds either the prompter or its privileged screen handle.
+    """
+    app = NomadApp(_config(tmp_path))
+    registered = [app.tools.get(name) for name in app.tools.names(enabled_only=False)]
+    registered += list(app.hardware_tools)
+
+    assert app.authprompt not in registered
+    assert app.prompter not in registered
+    assert not hasattr(app.authprompt, "spec")
+    assert AUTH_PROMPT_WRITER not in app.tools.names(enabled_only=False)
+    for tool in registered:
+        held = list(vars(tool).values())
+        assert app.authprompt not in held
+        assert app.prompter not in held
+        # A tool may hold a `ScreenView` — never the prompt's one.
+        for value in held:
+            assert getattr(value, "writer", None) != AUTH_PROMPT_WRITER
+
+
+async def test_the_prompt_component_starts_with_the_device(tmp_path: Path) -> None:
+    app = NomadApp(_config(tmp_path))
+    await app.start()
+    try:
+        assert app.states()["auth_prompt"] is ComponentState.STARTED
+    finally:
+        await app.stop()
+    assert app.states()["auth_prompt"] is ComponentState.STOPPED
+
+
+async def test_with_no_input_hardware_the_prompter_is_the_honest_one(tmp_path: Path) -> None:
+    """A headless screen means nothing feeds the joystick (D32)."""
+    app = NomadApp(_config(tmp_path))
+    assert isinstance(app.prompter, NullChoicePrompter)
+
+
+async def test_exactly_one_consumer_owns_the_input_stream(tmp_path: Path) -> None:
+    """`InputStream.events()` is single-consumer: two readers steal presses."""
+    app = NomadApp(_config(tmp_path))
+    holders = [
+        name
+        for name, value in vars(app).items()
+        if getattr(value, "_stream", None) is app.input
+    ]
+    assert holders in ([], ["prompter"])
 
 
 async def test_the_screen_is_served_over_loopback(tmp_path: Path) -> None:

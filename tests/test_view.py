@@ -27,6 +27,7 @@ from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import DEFAULT_HISTORY_LIMIT, HeadlessDisplay
 from nomad.view.renderer import TurnRenderer
+from nomad.view.screen import ScreenOwner
 from nomad.view.server import ScreenServer
 
 SESSION = "s1"
@@ -296,3 +297,60 @@ async def test_stopping_the_server_twice_is_inert(screen: HeadlessDisplay) -> No
     await server.stop()
     await server.stop()
     assert server.state is ComponentState.STOPPED
+
+
+# -- one screen, one writer at a time (D36) ----------------------------------
+
+
+async def test_writers_share_the_screen_while_nobody_holds_it(
+    screen: HeadlessDisplay,
+) -> None:
+    owner = ScreenOwner(screen)  # type: ignore[arg-type]
+    await owner.view("renderer").show_text("a turn")
+    assert screen.screen.text == "a turn"
+    await owner.view("model").show_card("card", "body", [("k", "v")])
+    assert "body" in screen.screen.text
+    assert owner.suppressed == 0
+    assert owner.holder is None
+
+
+async def test_a_holder_locks_every_other_writer_out(screen: HeadlessDisplay) -> None:
+    owner = ScreenOwner(screen)  # type: ignore[arg-type]
+    other = owner.view("renderer")
+    async with owner.exclusive("auth_prompt") as held:
+        assert owner.holder == "auth_prompt"
+        await held.show_text("the question")
+        await other.show_text("a streamed chunk")
+        await other.show_list("menu", [("a", None)])
+        await other.show_choice("really?", ["yes"])
+        assert screen.screen.text == "the question"
+        assert owner.suppressed == 3
+    assert owner.holder is None
+    await other.show_text("after")
+    assert screen.screen.text == "after"
+
+
+async def test_a_frame_queued_behind_a_draw_loses_to_a_claim_taken_meanwhile(
+    screen: HeadlessDisplay,
+) -> None:
+    """The re-check under the draw lock, which is the actual race D36 cares about."""
+    owner = ScreenOwner(screen)  # type: ignore[arg-type]
+    gate = asyncio.Event()
+
+    class SlowDisplay:
+        async def show_text(self, text: str, *, title: str | None = None) -> None:
+            await gate.wait()
+            await screen.show_text(text, title=title)
+
+    owner._display = SlowDisplay()  # type: ignore[assignment]
+    slow = asyncio.ensure_future(owner.view("renderer").show_text("first"))
+    await asyncio.sleep(0)
+    queued = asyncio.ensure_future(owner.view("renderer").show_text("second"))
+    await asyncio.sleep(0)
+
+    async with owner.exclusive("auth_prompt"):
+        gate.set()
+        await slow
+        await queued
+        assert screen.screen.text == "first"
+        assert owner.suppressed == 1

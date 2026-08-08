@@ -49,7 +49,13 @@ ALLOWED: dict[str, set[str]] = {
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary
     # and hold the `DisplayDriver` protocol; they own no state.
-    "view": {"core", "agent", "mcp"},
+    #
+    # `tools` and `input` were added in chunk F2, deliberately and not
+    # incidentally: the authorization prompt (D36) is a view onto the
+    # *permission* queue's vocabulary, answered with logical input actions
+    # (D32). Both edges point downhill — `tools` sees only core/storage/
+    # targets and `input` only core/protocol — so neither can close a cycle.
+    "view": {"core", "agent", "mcp", "tools", "input"},
     # Forward-declared: `api` does not exist yet, and when it does it is a
     # view like any other, allowed to see everything and seen by nothing.
     "api": set(EVERYTHING),
