@@ -15,9 +15,9 @@ with a local LLM over Tailscale as the eventual backend (D19, D24).
 
 **Where things stand:** branch `main`. `core`, `storage`, `targets`, `tools`
 (the whole permission pipeline), `agent/`, `mcp/`, and now `protocol/`,
-`hardware/` and `input/` are built and green — **368 tests passing, ruff
-clean**, verified by the coordinating session rather than self-reported. Chunks
-A–D, G, G2, E1, E2 and E3 are DONE.
+`hardware/`, `input/` and `memory/` are built and green — **431 tests passing,
+ruff clean**, verified by the coordinating session rather than self-reported.
+Chunks A–D, G, G2, E1, E2, E3 and M are DONE.
 
 **No hardware is wired up yet, and that is the plan.** The entire stack is built
 and tested against mock drivers; the screen, buttons, joystick, RP2040 and
@@ -25,12 +25,34 @@ PiSugar get soldered on in a later session, once the software is ready. Nothing
 in the suite needs a serial port, a credential or a pin. `HeadlessDisplay`
 exists so the parts that draw can still be watched while that is true.
 
-**Next action:** chunk M (memory Nomad owns), then N, V, P — see the review
-below for why those four are not optional polish. Two things a brief for them
-must carry, because neither is inferable: session rollover has to carry
-distilled memory forward, since the Claude Code transcript is *not* storage
-Nomad controls; and notifications must be durable rows, because `EventBus`
-drops slow subscribers by design (D6) and the screen is off most of the time.
+**Next action:** chunk N (presence), then V, O, P. One thing a brief for N must
+carry, because it is not inferable: notifications must be durable rows, since
+`EventBus` drops slow subscribers by design (D6) and the screen is off most of
+the time. M closed the other one — rollover carries distilled memory forward
+(D34), because the Claude Code transcript is *not* storage Nomad controls.
+
+**Chunk O — the offline tier — is the operator's call, recorded here so the
+constraints are not relearned.** The device is a brick without network today,
+and V puts a speech-to-text model on the Pi anyway; once it is there, "what's
+my battery", "show me the last thing I saved", "turn the screen down" should
+never pay a round trip to a datacentre. Four constraints the brief must carry:
+
+1. **The router fails *toward* Claude, never away from it.** An offline handler
+   that mis-reads an intent is worse than a round trip, because the operator
+   cannot tell it happened. Exact, high-confidence matches only; anything else
+   goes to the model. Never a confidence threshold tuned to catch more.
+2. **Deterministic handlers, not a small local model.** D17 already settled that
+   the accelerator cannot run an LLM; this is intent matching over a fixed
+   phrase set into existing tools, which is why it can be tested.
+3. **Promotion is evidence-driven and operator-approved.** The feedback loop is
+   the interesting half: count what gets asked, and when a pattern is frequent
+   *and* stable, Nomad proposes a new onboard tool and the operator accepts it.
+   Never silent self-promotion — a device that quietly changes what a phrase
+   means is a device you stop trusting.
+4. **A promoted tool is a tool.** It carries a `ToolSpec`, it is gated by the
+   broker, it is audited (D4, D21). "Onboard" describes where it runs, never
+   whether it is authorized. An offline fast path that skips the broker would
+   undo the entire security layer at exactly the moment nobody is watching.
 
 **Machine constraints, learned the hard way:** 2 CPUs, ~3.8 GB RAM. One subagent
 at a time, never two heavy commands at once, and run tests as
@@ -60,10 +82,11 @@ them. More files meant more places for the contract to drift.
 | E1 | **Protocol (D30):** framing with resync, JSON codec, transports, `Link` with reboot detection | `src/nomad/protocol/**`, `tests/test_protocol.py` | `pytest tests/test_protocol.py` | **DONE** |
 | E2 | Hardware drivers: headless + ESP32 display, PiSugar battery, driver selection; display vocabulary (`display_card`/`display_list`/`display_choice`), `get_context` | `src/nomad/hardware/**`, `src/nomad/mcp/hardware.py`, `tests/test_hardware.py` | `pytest tests/{test_hardware,test_mcp_hardware}.py` | **DONE** |
 | E3 | Input: logical action layer, deadzone + hysteresis, repeat vs edge-trigger on one stream, extensible action set (D13, D26) | `src/nomad/input/**`, `tests/test_input.py` | `pytest tests/test_input.py` | **DONE** |
-| M | **Memory Nomad owns:** durable owner memory + `remember`/`recall`/`forget` MCP tools; session rollover carries it forward | `src/nomad/memory/**`, migration, `tests/test_memory.py` | `pytest tests/test_memory.py` | TODO |
+| M | **Memory Nomad owns:** durable owner memory + `remember`/`recall`/`forget` MCP tools; session rollover carries it forward | `src/nomad/memory/**`, migration, `tests/test_memory.py` | `pytest tests/test_memory.py` | **DONE** (D33, D34) |
 | N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | TODO |
 | V | **Voice:** `Recorder`/`Speaker`/`Transcriber` protocols with mock defaults, `push_to_talk` action, audio on the Pi — never the ESP32 link | `src/nomad/audio/**`, `tests/test_audio.py` | `pytest tests/test_audio.py` | TODO |
 | P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
+| O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | F | Wire-up: API, `__main__`, composition root, layering test, README | `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |

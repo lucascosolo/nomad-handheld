@@ -817,6 +817,86 @@ model would reasonably read as an answer.
 
 ---
 
+## D33 — Memory is an index Nomad searches, not a payload it carries
+
+`NOMAD.md` instructed the model to learn how its operator works and write it
+down. There was nowhere to write. A persistent companion that forgets at every
+session boundary is a chat window with a battery.
+
+The store is ordinary: SQLite via migration 002, soft-deleted rows, dedup on
+normalized text so a session alive for weeks does not accumulate a hundred
+copies of the same fact.
+
+**What is decided here is what gets *carried*.** Only pinned memories are
+injected at session start, capped at 8 rows and 600 characters, with a single
+memory capped at 280 characters and the pinned set capped at 12. Everything
+else is reached through `recall()`.
+
+The reasoning is a context budget, not tidiness. An injected block is part of
+every request for the life of the session and permanently occupies window. A
+briefing that grows with the store is therefore a slow leak, and the failure it
+produces is not "Nomad is verbose" — it is worse code and confident wrong
+answers out of a crowded context. `tests/test_memory.py` asserts the invariant
+directly: 500 memories in the store, briefing size unchanged.
+
+**The index line is what makes retrieval work.** After the pinned block comes
+one constant-size line — `Also stored: 34 project, 12 preference. Use
+recall(query)` — counts by kind, never contents. A model does not search for
+what it does not know exists; without that line a `recall` tool is dead weight
+and the pressure returns to injecting everything. Counts scale; contents do not.
+
+Pinning is scarce *on purpose*. Past the cap, `remember(pinned=True)` refuses
+and names the least-recalled pinned memory as the one to unpin, which forces a
+ranking decision instead of silently degrading every future prompt.
+
+Two smaller calls, both load-bearing:
+
+- **`forget` is `MUTATING`, not `DESTRUCTIVE`.** `DESTRUCTIVE` is `never_auto`
+  (D14), so a destructive `forget` would prompt the operator every time Nomad
+  corrected a stale belief about them. That reads as broken, not careful. The
+  row survives with a `forgotten_at` stamp, so the audit trail is intact and
+  the label is honest.
+- **`remember` refuses credentials.** This is the one store whose contents are
+  injected into every future system prompt. A secret written here is permanent
+  and re-exfiltrable — strictly worse than the channel D31 closed. The check is
+  deliberately narrow; a false refusal on "my password manager is 1Password"
+  would be its own bug.
+
+No FTS5. The corpus is a few hundred rows, `LIKE` scoring is sufficient, and an
+index that may be absent from a given SQLite build and cannot be rebuilt
+without the corpus is a bad dependency on a device that is often offline. Token
+cost is a function of what is injected, not of how search is implemented.
+
+*Cost to change:* Low for the ranking and the caps. Moderate for the storage
+shape, which a migration already governs.
+
+---
+
+## D34 — A session is rolled over, not resumed forever
+
+Nomad's premise is a session that stays alive as long as the device has power.
+Taken literally that means one `--session-id` resumed for six months: untested,
+slower every week, and eventually the reason the device feels broken — with no
+single failure to point at.
+
+So the backend session is not the Nomad session. `memory/rollover.py` is a pure
+policy over age (168h) and turn count (500). When it fires, Nomad starts a
+**fresh backend session seeded by the briefing**, with `resume_session_id=None`
+— never by replaying the old transcript. The conversation, the mode and the
+memory carry straight on; only the backend's context is new.
+
+This is why D33 had to land first. Rolling a session is only survivable if what
+mattered was written down somewhere that survives the roll, and a transcript is
+not that place — it is compacted by rules Nomad does not set. Memory is the
+thing that makes a session disposable, which is what lets it stay fast.
+
+An injected backend is exempt: the session will not roll something it did not
+construct and cannot rebuild.
+
+*Cost to change:* Low. The policy is pure and the thresholds are config.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:
