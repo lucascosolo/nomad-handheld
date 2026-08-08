@@ -30,7 +30,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 EVERYTHING = {
     "core", "protocol", "storage", "targets", "hardware", "input",
     "memory", "tools", "mcp", "agent", "view", "audio", "resources",
-    "notifications", "utilities", "skills",
+    "notifications", "utilities", "skills", "offline",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -69,9 +69,27 @@ ALLOWED: dict[str, set[str]] = {
     # would be a skill acquiring a capability.
     "skills": {"core"},
     "tools": {"core", "storage", "targets"},
+    # Chunk O. Three edges, each one earned:
+    #
+    # `tools` is the whole point — a matched intent is minted as a grant and run
+    # through `ToolExecutor` like any other call (D4). An offline tier that did
+    # not import `tools` would be one that executes some other way.
+    # `storage` holds the evidence: counts that die with the process cannot
+    # argue that the operator asks something every morning (D34).
+    # `resources` is D38's `OpportunisticWorkload`, which promotion analysis
+    # subclasses so the governor can suspend it while a turn is live. It is a
+    # base class, not a governor — the composition root does the registering.
+    #
+    # **Not `agent`, and not `skills`.** No `agent` because the router must be
+    # answerable with the loop wedged or absent; the responder takes a session
+    # id and a mode as arguments rather than reaching for a session. No `skills`
+    # because a promotion draft is *text* until an operator installs it, and the
+    # library that validates and loads it is on the far side of that human step
+    # (D26, D39) — importing it here would put a writer next to the drafts.
+    "offline": {"core", "storage", "tools", "resources"},
     "mcp": {
         "core", "storage", "targets", "tools", "memory", "audio",
-        "notifications", "utilities", "skills",
+        "notifications", "utilities", "skills", "offline",
     },
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary

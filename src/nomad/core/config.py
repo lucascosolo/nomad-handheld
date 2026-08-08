@@ -190,6 +190,44 @@ class UtilitiesConfig(BaseModel):
     max_stopwatches: int = 8
 
 
+class OfflineConfig(BaseModel):
+    """The offline tier, and the numbers that are not a matching dial (chunk O).
+
+    **Nothing here loosens matching, and nothing here ever will.** The router
+    matches exactly or defers to the model, so there is no cutoff, no tolerance
+    and no similarity setting to raise — a phrase starts being answered onboard
+    by being added to `offline/catalog.py` in a diff, never by a config edit.
+    Every number below is about *evidence and pacing*: how much history it takes
+    before Nomad asks the operator a question, and how often it looks.
+
+    `promote_after_asks` and `promote_after_days` are two conditions, not one
+    with a fudge factor. Frequency alone promotes a phrase somebody said eight
+    times in one frustrated afternoon; the day count is what separates a habit
+    from an incident, and the operator is being asked to rule on the habit.
+    """
+
+    #: Read by the composition root, which builds a responder or does not.
+    enabled: bool = True
+    #: How many times a phrase must be asked before it can be proposed.
+    promote_after_asks: int = 5
+    #: ...and on how many distinct days, so an incident is not a habit.
+    promote_after_days: int = 3
+    #: Bound on the evidence table. A handheld is not a data warehouse, and a
+    #: log of every sentence ever said to it is a privacy problem as well as a
+    #: size one.
+    max_tracked_asks: int = 500
+    #: Longest utterance treated as evidence. A paragraph is not a phrase
+    #: anybody repeats, so counting it only stores the operator's prose.
+    max_ask_chars: int = 200
+    #: Proposals waiting at once. An operator staring at a backlog stops
+    #: reading them, and a proposal nobody reads trains the habit of dismissing
+    #: whatever the device suggests.
+    max_open_proposals: int = 5
+    #: How often the analyst looks, in seconds. It is opportunistic work (D38)
+    #: and yields to any live turn, so this is a floor on cost, not a promise.
+    analysis_interval_seconds: float = 900.0
+
+
 class WorkspaceConfig(BaseModel):
     root: str = "var/workspace"
     follow_symlinks_outside_root: bool = False
@@ -378,6 +416,7 @@ class NomadConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     utilities: UtilitiesConfig = Field(default_factory=UtilitiesConfig)
+    offline: OfflineConfig = Field(default_factory=OfflineConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)

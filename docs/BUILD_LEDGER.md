@@ -13,10 +13,11 @@ Read this first after a compaction.
 companion. Claude Code is the agent loop *today*, behind a swappable interface,
 with a local LLM over Tailscale as the eventual backend (D19, D24).
 
-**Where things stand:** branch `main`, **654 tests passing, ruff clean**,
+**Where things stand:** branch `main`, **723 tests passing, ruff clean**,
 verified by the coordinating session rather than self-reported. Chunks A–D, G,
-G2, E1–E3, M, F1, F2, **V, R, N, U and S** are DONE. Only **O** remains of the
-2026-08-08 goal, then F3 (HTTP API, README, prompt wiring), P, I and H.
+G2, E1–E3, M, F1, F2, **V, R, N, U, S and O** are DONE — the whole 2026-08-08
+goal is built. What remains is **wiring, not design**: F3 (composition root,
+HTTP API, README), then P, I and H.
 
 **Hardware, verified on the device 2026-08-08 — not assumed.** With the Pi
 powered up, `lsusb` and ALSA say:
@@ -40,14 +41,25 @@ above blocked a single chunk. What it *does* change is that the real ALSA
 where chunk V deliberately left `alsa`/`whisper`/`piper` as named-but-
 unimplemented seams.
 
-**Next action:** finish **O** (the offline tier — its four constraints are
-below and they are the spec), then the independent adversarial review the
-operator set as the completion criterion. After that, in rough value order:
-inject `SkillLibrary.render_index()` into the prompt and ship seed skills
-(neither is wired — see the S note), the real ALSA drivers, then getting the
-panel addressable (plug it into the Pi, flash D30 firmware), which matters
-because touch is the stated interface and that panel is the only input hardware
-that exists.
+**Next action: F3, and it matters more than the chunk list suggests.** V, R, N,
+U, S and O are all built, tested and *inert* — `app.py` constructs almost none
+of them. In value order:
+
+1. **Wire the composition root.** Register the notification queue and STT as
+   `INTERACTIVE` and `PromotionAnalyst` as `OPPORTUNISTIC` (D38); build
+   `OfflineResponder` with the same broker and executor the agent uses; build
+   `build_offline_tools` and `build_skill_tools`.
+2. **Inject `SkillLibrary.render_index()` into the prompt** and ship seed skills
+   from a committed directory — `var/` is gitignored, so there is nowhere for
+   them to live today. Until this lands the skill system is dormant.
+3. **An operator UI for promotion accept/reject.** `IntentLedger.accept/reject`
+   are deliberately unreachable from `can_use_tool`, so proposals currently
+   accumulate to the cap and stop.
+4. **The real ALSA `Recorder`/`Speaker`** against card 1 and card 0, now that
+   the mic is confirmed working.
+5. **Get the panel addressable** — plug it into the Pi, flash D30 firmware.
+   Touch is the stated interface and that panel is the only input hardware that
+   exists.
 
 **Chunk O — the offline tier — is the operator's call, recorded here so the
 constraints are not relearned.** The device is a brick without network today,
@@ -64,13 +76,21 @@ never pay a round trip to a datacentre. Four constraints the brief must carry:
    phrase set into existing tools, which is why it can be tested.
 3. **Promotion is evidence-driven and operator-approved.** The feedback loop is
    the interesting half: count what gets asked, and when a pattern is frequent
-   *and* stable, Nomad proposes a new onboard tool and the operator accepts it.
-   Never silent self-promotion — a device that quietly changes what a phrase
-   means is a device you stop trusting.
-4. **A promoted tool is a tool.** It carries a `ToolSpec`, it is gated by the
-   broker, it is audited (D4, D21). "Onboard" describes where it runs, never
-   whether it is authorized. An offline fast path that skips the broker would
-   undo the entire security layer at exactly the moment nobody is watching.
+   *and* stable, Nomad proposes a new onboard capability and the operator
+   accepts it. Never silent self-promotion — a device that quietly changes what
+   a phrase means is a device you stop trusting.
+
+   **Corrected after D39 landed:** this originally said "proposes a new onboard
+   *tool*", and D39 says prefer a *skill*. The skill form wins, and the reason
+   is what the evidence can actually support: the analyst holds a phrase and two
+   integers, which can argue "this gets asked often" but cannot argue a risk
+   level or a permission decision. `PromotionForm.TOOL` exists in the vocabulary
+   and the analyst deliberately cannot reach it.
+4. **A promoted capability is still gated.** If one ever takes tool form it
+   carries a `ToolSpec`, is gated by the broker, and is audited (D4, D21).
+   "Onboard" describes where it runs, never whether it is authorized. An offline
+   fast path that skips the broker would undo the entire security layer at
+   exactly the moment nobody is watching.
 
 **Machine constraints, learned the hard way:** 2 CPUs, ~3.8 GB RAM, and the
 operator has had this laptop freeze. **One subagent at a time** (the operator's
@@ -124,7 +144,7 @@ them. More files meant more places for the contract to drift.
 | N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | **DONE** |
 | U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit conversion — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities_core.py` | `pytest tests/test_utilities_core.py` | **DONE** |
 | S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | **DONE** (D39) |
-| O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
+| O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path proposing promotions the operator approves | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | **DONE** |
 | P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | F3 | Remaining wire-up: HTTP API, README, full layering sweep | `src/nomad/api/**`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
@@ -349,6 +369,54 @@ clean.
 F3), and no starter skills ship — `var/` is gitignored, so seed skills need a
 committed source directory the setup script copies from. Both are wiring, not
 design.
+
+**O — DONE.** Three separable pieces under one constraint: *onboard* describes
+where a call runs, never whether it was authorized.
+
+- **Matching is equality, not scoring.** A canonical normalization plus literal
+  token templates with one hole, whose slot must parse under a total grammar.
+  Ambiguity returns `None` and the model gets it. There is no cutoff and no
+  ranking, and an ast scan fails if any identifier in the package contains
+  `threshold`/`confidence`/`fuzzy`/`similarity` or if a similarity library is
+  imported. **A scored matcher with a "safe" default was considered and
+  rejected: the dial is the failure mode, not a mitigation of it.** A cutoff
+  exists to be raised the first afternoon a phrase misses, and each turn buys
+  recall by spending correctness invisibly. Adding a phrase is a diff someone
+  read.
+- **The responder owns no execution.** It builds a `ToolRequest` and goes
+  `broker.decide` → `broker.authorize` → `executor.run`. A denied or
+  `never_auto` intent is simply not handled — it does not prompt, because there
+  is one authorization UI on this device (D36). A fast path for `device_local`
+  tools "since they auto-approve anyway" was rejected: that is a second
+  execution path reachable only when nobody is watching, and `never_auto`,
+  disabled tools and unknown tools all live in the path it would skip.
+- **Evidence is rows, and proposing is where it stops.** Misses are counted;
+  `PromotionAnalyst` is an `OpportunisticWorkload` (D38) that drafts a *skill*
+  when a phrase is frequent and stable, and then stops. Accepting records the
+  operator's yes and returns the draft — it writes no file, loads no skill and
+  changes no phrase. Rejection is permanent.
+
+Layering added `offline → {core, storage, tools, resources}`. Notably **not
+`agent`** (the responder takes `session_id` and mode as arguments, so it answers
+with the loop wedged or absent) and **not `skills`** (a draft is text until an
+operator installs it; importing the library would put a writer next to the
+drafts).
+
+Verified by the coordinating session: `tests/test_offline.py` **69 passed**,
+full suite **723 passed**, ruff clean. The no-dial guard was independently
+re-confirmed by injecting a `confidence_threshold` and watching it fail.
+
+**Inert until wired.** Nothing in `app.py` builds any of it. The composition
+root must construct `PromotionAnalyst` and register it opportunistic, register
+`build_offline_tools(...)`, and build `OfflineResponder` with the same broker
+and executor the agent uses. There is also **no operator UI for accept/reject**:
+`IntentLedger.accept/reject` exist and are deliberately unreachable from
+`can_use_tool`, so until a view or CLI calls them, proposals accumulate to the
+cap and stop. Both belong in F3.
+
+Also note `offline_asks` stores the operator's phrasings as plaintext SQLite —
+the same posture as notes and memories, so the known "encryption at rest" gap
+now covers one more table.
 
 ## Notes
 

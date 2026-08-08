@@ -117,6 +117,30 @@ note_search_limit = 10
 note_preview_chars = 200
 max_stopwatches = 8
 
+# The offline tier. A deterministic phrase router answers common asks with no
+# network, through the ordinary broker - "onboard" says where a call runs, never
+# whether it was allowed.
+#
+# There is no matching setting here on purpose. The router matches exactly or
+# hands the utterance to the model; a dial that catches more phrases would also
+# catch wrong ones, and a mis-read intent is invisible to the operator in a way
+# a round trip is not. New phrases are added to offline/catalog.py in a diff.
+[offline]
+enabled = true
+# Evidence before Nomad asks to promote a phrase: frequent AND stable. Eight
+# asks in one frustrated afternoon is an incident; five asks over three days is
+# a habit, and the habit is what the operator is being asked to rule on.
+promote_after_asks = 5
+promote_after_days = 3
+max_tracked_asks = 500
+max_ask_chars = 200
+# Proposals waiting at once. A backlog nobody reads teaches the operator to
+# dismiss whatever the device suggests.
+max_open_proposals = 5
+# Promotion analysis is opportunistic work (D38): it yields the machine to any
+# live turn, so this is a floor on how often it looks, not a promise.
+analysis_interval_seconds = 900.0
+
 # Self-authored apps. (D25)
 [apps]
 root = "var/apps"

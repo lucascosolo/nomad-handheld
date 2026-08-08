@@ -292,11 +292,88 @@ async def _migration_004_utilities(db: Database) -> None:
     )
 
 
+async def _migration_005_offline(db: Database) -> None:
+    """Evidence for the offline tier's promotion path (chunk O).
+
+    **Both tables exist because a count that dies with the process is not
+    evidence.** Nomad's session rolls over by design (D34) and the device is
+    power-cycled in a pocket; "the operator asks this every morning" is a claim
+    that can only be made from rows that outlived several of both.
+
+    `offline_asks.normalized` is UNIQUE and it is the canonical form
+    `offline/intents.py` matches on, not the raw text. That is deliberate: the
+    router treats "What's my battery?" and "whats my battery" as one question,
+    so evidence that split them would undercount every phrase the operator says
+    two ways and never reach a count worth acting on. `sample` keeps one raw
+    spelling so a proposal can quote the operator back to themselves.
+
+    `observed_days_json` is a bounded list of dates rather than a counter,
+    because the question being asked of it is "on how many *distinct* days", and
+    a counter cannot answer that without also knowing whether today is already
+    counted. It is capped in `ledger.py`; stability only ever asks "at least N".
+
+    `offline_promotions.state` is why there is a second table rather than three
+    more columns on the first. A proposal is a thing with a lifecycle an
+    operator drives — proposed, then accepted or rejected — and the rejected
+    rows are load-bearing: `candidates()` joins against this table so a phrase
+    the operator has already refused is never proposed again. A device that
+    re-asks a settled question has made "no" more expensive than "yes".
+
+    Neither table carries a foreign key to `sessions`: evidence about what the
+    operator asks must outlive the session that heard it, the same reasoning
+    migrations 002, 003 and 004 all give.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offline_asks (
+            id TEXT PRIMARY KEY,
+            normalized TEXT NOT NULL UNIQUE,
+            sample TEXT NOT NULL,
+            routed_intent TEXT,
+            ask_count INTEGER NOT NULL DEFAULT 1,
+            observed_days_json TEXT NOT NULL DEFAULT '[]',
+            first_asked_at TEXT NOT NULL,
+            last_asked_at TEXT NOT NULL
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offline_asks_count ON offline_asks(ask_count)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offline_asks_routed ON offline_asks(routed_intent)"
+    )
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS offline_promotions (
+            id TEXT PRIMARY KEY,
+            normalized TEXT NOT NULL UNIQUE,
+            form TEXT NOT NULL CHECK (form IN ('skill', 'tool')),
+            name TEXT NOT NULL,
+            rationale TEXT NOT NULL DEFAULT '',
+            draft TEXT NOT NULL DEFAULT '',
+            evidence_asks INTEGER NOT NULL DEFAULT 0,
+            evidence_days INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL
+                CHECK (state IN ('proposed', 'accepted', 'rejected')),
+            proposed_at TEXT NOT NULL,
+            decided_at TEXT
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_offline_promotions_state "
+        "ON offline_promotions(state)"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _migration_001_initial_schema,
     _migration_002_memories,
     _migration_003_notifications,
     _migration_004_utilities,
+    _migration_005_offline,
 ]
 
 
