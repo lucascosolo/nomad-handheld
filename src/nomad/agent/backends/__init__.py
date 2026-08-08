@@ -36,6 +36,7 @@ def create_backend(
     router: McpToolRouter | None = None,
     cwd: str | None = None,
     resume_session_id: str | None = None,
+    briefing: str = "",
 ) -> AgentBackend:
     """Build the backend named by `[agent].backend`.
 
@@ -43,6 +44,13 @@ def create_backend(
     what lets `mock` (the default) run on a machine with no `claude-agent-sdk`
     installed. Importing it at module scope would make the optional dependency
     mandatory in practice and break D9.
+
+    `briefing` is what Nomad already knows, appended to the identity so it is
+    in the prompt rather than waiting behind a tool call the model has no
+    reason to make. It arrives pre-composed, as a string: this function stays
+    sync and does no I/O, so composing it (which reads the store) belongs to
+    the caller. A backend factory that awaits is one that cannot be called
+    from a constructor.
     """
     kind = config.agent.backend
 
@@ -57,6 +65,8 @@ def create_backend(
         if config.agent.claude_cli.identity_path
         else None
     )
+    if briefing.strip():
+        identity = f"{identity}\n\n{briefing.strip()}"
 
     if kind is AgentBackendKind.CLAUDE_CLI:
         if bridge is None:

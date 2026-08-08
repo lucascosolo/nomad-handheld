@@ -62,6 +62,32 @@ strict_mcp_config = false
 base_url = ""
 model = ""
 
+# The memory Nomad owns.
+# Memory is a searchable index that is retrieved from, not a payload that is
+# carried. Only pinned memories are injected at session start; everything else
+# is reached with recall. An injected block that grew with the store would be a
+# context tax paid on every single turn, and an overloaded window makes the
+# model write worse code.
+[memory]
+enabled = true
+# Total rows before the least valuable unpinned memory is evicted. A pinned
+# memory is never evicted; if everything is pinned, remembering is refused.
+max_memories = 500
+# The pinned set is the entire per-turn cost of memory, so it is small and
+# deliberate. Pinning past this is refused and names the pin to drop.
+max_pinned = 12
+# Hard ceiling on the injected block, by characters and by count. Whichever
+# binds first wins. Both are independent of how large the store has grown.
+injection_budget_chars = 600
+injection_max_memories = 8
+# Rows one recall may return — recall output lands in context too.
+recall_limit = 5
+# Session rollover. A backend session resumed continuously for six months is
+# untested and gets slower every week; the new session is seeded by the
+# briefing, never by the old transcript. Zero disables that half of the policy.
+session_max_age_hours = 168
+session_max_turns = 500
+
 # Self-authored apps. (D25)
 [apps]
 root = "var/apps"

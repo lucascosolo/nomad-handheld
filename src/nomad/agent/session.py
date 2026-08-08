@@ -46,7 +46,10 @@ from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.core.logging import get_logger
 from nomad.mcp.server import McpToolRouter, build_hardware_tools, register_hardware_tools
-from nomad.storage.repositories.conversations import ConversationsRepository
+from nomad.memory.briefing import compose_briefing
+from nomad.memory.rollover import should_roll
+from nomad.memory.store import MemoryStore
+from nomad.storage.repositories.conversations import ConversationsRepository, TurnStatus
 from nomad.storage.repositories.grants import GrantsRepository
 from nomad.targets.registry import TargetRegistry
 from nomad.tools.base import Tool
@@ -68,6 +71,7 @@ logger = get_logger(__name__)
 EVENT_MODE_CHANGED = "agent.mode_changed"
 EVENT_RESUMED = "agent.resumed"
 EVENT_AGENT_EVENT = "agent.event"
+EVENT_SESSION_ROLLED = "agent.session_rolled"
 
 _NON_RESUMABLE = ("running", "awaiting_grant")
 
@@ -76,6 +80,20 @@ class TurnOutcomeStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
+
+
+#: The agent's outcome vocabulary is not storage's. `turns.status` is
+#: constrained by migration 001 to `complete`/`failed`/`aborted`; writing the
+#: enum's own spelling straight through raised `CHECK constraint failed` on
+#: *every* finished turn, so no turn was ever recorded as done. It went unseen
+#: because a `# type: ignore[arg-type]` sat on the call — the annotation was
+#: correct and the silencer was the bug. Map explicitly, and let an unmapped
+#: member be a KeyError rather than a database error at the end of a turn.
+_STORED_STATUS: dict[TurnOutcomeStatus, TurnStatus] = {
+    TurnOutcomeStatus.COMPLETED: "complete",
+    TurnOutcomeStatus.FAILED: "failed",
+    TurnOutcomeStatus.INTERRUPTED: "aborted",
+}
 
 
 class TurnOutcome(BaseModel):
@@ -113,6 +131,7 @@ class AgentSession:
         targets: TargetRegistry,
         tools: ToolRegistry,
         workspace: Workspace,
+        memory: MemoryStore | None = None,
         backend: AgentBackend | None = None,
         hardware_tools: list[Tool] | None = None,
         classifier: Classifier | None = None,
@@ -128,6 +147,7 @@ class AgentSession:
         self._targets = targets
         self._tools = tools
         self._workspace = workspace
+        self._memory = memory
         self._session_id = session_id
         self._resume_pending = resume_pending
         self._authorization_timeout = authorization_timeout
@@ -139,6 +159,11 @@ class AgentSession:
         self._current_turn_id: str | None = None
         self._current_turn_task: asyncio.Task[Any] | None = None
         self._resume_report: ResumeReport | None = None
+        # Rollover bookkeeping. These track the *backend* session, which is
+        # not the Nomad session: rolling starts a fresh transcript while the
+        # conversation, the mode and the memory all carry straight on.
+        self._backend_started_at = datetime.now(UTC)
+        self._backend_turns = 0
 
         self._broker = PermissionBroker(
             tools=tools,
@@ -167,7 +192,11 @@ class AgentSession:
         # The tools the backend may call, on both sides of the boundary:
         # Nomad's hardware (which Nomad executes) and the backend's own tools
         # (which it executes, but which Nomad still classifies and gates).
-        self._hardware = hardware_tools if hardware_tools is not None else build_hardware_tools()
+        self._hardware = (
+            hardware_tools
+            if hardware_tools is not None
+            else build_hardware_tools(store=memory)
+        )
         register_hardware_tools(tools, self._hardware)
         register_backend_tools(tools)
 
@@ -188,10 +217,24 @@ class AgentSession:
             vault=self._vault,
             specs=[tool.spec for tool in self._hardware],
         )
-        self._backend = backend or create_backend(
-            config, bridge=self._bridge, router=self._router, cwd=str(workspace.root)
-        )
+        # An injected backend is the caller's to manage: the session must not
+        # replace it at start, nor roll it. Rollover rebuilds via
+        # `create_backend`, which cannot reconstruct something handed in.
+        self._backend_injected = backend is not None
+        self._backend = backend or self._new_backend()
         self._events: AsyncIterator[AgentEvent] | None = None
+
+    def _new_backend(
+        self, *, briefing: str = "", resume_session_id: str | None = None
+    ) -> AgentBackend:
+        return create_backend(
+            self._config,
+            bridge=self._bridge,
+            router=self._router,
+            cwd=str(self._workspace.root),
+            briefing=briefing,
+            resume_session_id=resume_session_id,
+        )
 
     # -- accessors ---------------------------------------------------------
 
@@ -262,8 +305,18 @@ class AgentSession:
             # outranks the config default on restart (D14).
             self._mode = PermissionMode(existing.mode)
 
+        # The briefing needs I/O and `create_backend` is deliberately sync, so
+        # the backend built in `__init__` is replaced here — once, before it is
+        # started, and only when there is something to inject. Constructing a
+        # backend has no side effects; starting one does.
+        briefing = await self._compose_briefing()
+        if briefing and not self._backend_injected:
+            self._backend = self._new_backend(briefing=briefing)
+
         await self._backend.start()
         self._events = self._backend.events()
+        self._backend_started_at = datetime.now(UTC)
+        self._backend_turns = 0
 
         self._resume_report = await self.resume()
         self._state = ComponentState.STARTED
@@ -353,6 +406,76 @@ class AgentSession:
                 await self.send(str(prompt.content.get("text", "")))
         return report
 
+    # -- memory ------------------------------------------------------------
+
+    async def _compose_briefing(self) -> str:
+        """What Nomad already knows, bounded, ready to append to the identity.
+
+        Never raises: a memory store that cannot be read is a session without
+        a briefing, not a device that will not boot.
+        """
+        if self._memory is None or not self._config.memory.enabled:
+            return ""
+        try:
+            pinned = await self._memory.for_briefing()
+            counts = await self._memory.unpinned_counts_by_kind()
+        except Exception as exc:  # noqa: BLE001 - memory must never block a boot
+            logger.warning(
+                "Could not read memory for the session briefing",
+                extra={"error": f"{type(exc).__name__}: {exc}"},
+            )
+            return ""
+        return compose_briefing(
+            pinned,
+            budget_chars=self._config.memory.injection_budget_chars,
+            max_memories=self._config.memory.injection_max_memories,
+            unpinned_counts=counts,
+        )
+
+    async def _maybe_roll_backend(self) -> None:
+        """Start a fresh backend session at a turn boundary when it has run long.
+
+        The new session gets `resume_session_id=None` and the briefing — not
+        the old transcript. Replaying the transcript would reintroduce exactly
+        the unbounded growth the roll exists to escape; memory is what makes
+        dropping it survivable, which is why this policy lives with memory and
+        not with the backend.
+        """
+        if self._memory is None or self._backend_injected:
+            return
+        decision = should_roll(
+            started_at=self._backend_started_at,
+            turn_count=self._backend_turns,
+            now=datetime.now(UTC),
+            config=self._config.memory,
+        )
+        if not decision.roll:
+            return
+
+        briefing = await self._compose_briefing()
+        try:
+            await self._backend.stop()
+        except Exception as exc:  # noqa: BLE001 - a roll must not fail the turn
+            logger.warning("Backend stop during rollover failed", extra={"error": str(exc)})
+        self._backend = self._new_backend(briefing=briefing, resume_session_id=None)
+        await self._backend.start()
+        self._events = self._backend.events()
+        self._backend_started_at = datetime.now(UTC)
+        self._backend_turns = 0
+
+        await self._bus.publish(
+            Event(
+                type=EVENT_SESSION_ROLLED,
+                source="agent_session",
+                payload={
+                    "session_id": self.session_id,
+                    "reason": decision.reason,
+                    "briefing_chars": len(briefing),
+                },
+            )
+        )
+        logger.info("Backend session rolled over", extra={"reason": decision.reason})
+
     # -- conversation ------------------------------------------------------
 
     async def send(self, text: str) -> TurnOutcome:
@@ -385,6 +508,9 @@ class AgentSession:
         if self._events is None:
             raise RuntimeError("AgentSession has not been started")
 
+        await self._maybe_roll_backend()
+        self._backend_turns += 1
+
         turn = await self._conversations.create_turn(session_id=self.session_id, status="running")
         self._current_turn_id = turn.id
         await self._conversations.add_message(
@@ -406,8 +532,7 @@ class AgentSession:
             outcome.status = TurnOutcomeStatus.FAILED
             outcome.error = f"{type(exc).__name__}: {exc}"
 
-        status = "completed" if outcome.status is TurnOutcomeStatus.COMPLETED else "failed"
-        await self._conversations.update_turn_status(turn.id, status)  # type: ignore[arg-type]
+        await self._conversations.update_turn_status(turn.id, _STORED_STATUS[outcome.status])
         if outcome.text:
             await self._conversations.add_message(
                 turn_id=turn.id,

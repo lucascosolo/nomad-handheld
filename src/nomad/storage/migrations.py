@@ -123,8 +123,58 @@ async def _migration_001_initial_schema(db: Database) -> None:
     )
 
 
+async def _migration_002_memories(db: Database) -> None:
+    """The memory Nomad owns (chunk M).
+
+    **No FTS5, on purpose.** The corpus is a few hundred rows on a handheld;
+    a linear scan with `LIKE`-style scoring in `memory/store.py` is fast
+    enough and is testable as ordinary code. An FTS5 virtual table, by
+    contrast, may be missing from whatever sqlite a Pi image happens to ship,
+    the failure shows up only on the device, and rebuilding a corrupt index
+    offline on a handheld is maintenance nobody will do. The portability risk
+    is not worth buying speed the corpus size does not need.
+
+    `normalized_text` is UNIQUE: that constraint *is* the dedup rule. Two
+    memories that fold to the same text are the same fact, and a session alive
+    for weeks will re-state the same fact daily.
+
+    `forgotten_at` makes forgetting a soft delete — every belief the device
+    ever held stays auditable, which is the rule for every other decision on
+    this device too.
+
+    `source_session_id` carries no foreign key deliberately: a memory must
+    outlive the session that formed it, including across the session rollover
+    in `memory/rollover.py`.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            normalized_text TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL
+                CHECK (kind IN ('operator', 'preference', 'project', 'fact')),
+            keywords_json TEXT NOT NULL DEFAULT '[]',
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_recalled_at TEXT,
+            recall_count INTEGER NOT NULL DEFAULT 0,
+            source_session_id TEXT,
+            forgotten_at TEXT
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(forgotten_at)"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _migration_001_initial_schema,
+    _migration_002_memories,
 ]
 
 

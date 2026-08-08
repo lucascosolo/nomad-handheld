@@ -110,6 +110,39 @@ class AgentConfig(BaseModel):
     remote_llm: RemoteLlmConfig = Field(default_factory=RemoteLlmConfig)
 
 
+class MemoryConfig(BaseModel):
+    """The memory Nomad owns, and the ceiling on what it costs per turn.
+
+    Every limit here exists because memory has two failure modes and they pull
+    in opposite directions. Forgetting everything at a session boundary was the
+    original defect. Remembering everything *into the prompt* is the subtler
+    one: an injected block that grows with the store is a tax charged on every
+    request in the session, and an overloaded context makes the model write
+    worse code and invent things. So injection is bounded by count and by
+    characters, only pinned memories are injected, and pins themselves are
+    capped — the rest of the store is reached with `recall`.
+    """
+
+    enabled: bool = True
+    #: Total rows before the store evicts the least valuable unpinned one.
+    max_memories: int = 500
+    #: The pinned set is the whole of what memory costs per turn, so it is
+    #: small and deliberate. Pinning past this is refused, not silently grown.
+    max_pinned: int = 12
+    #: Hard ceiling on the injected block. Whichever of these two binds first
+    #: wins; both are independent of how large the store has grown.
+    injection_budget_chars: int = 600
+    injection_max_memories: int = 8
+    #: Rows one `recall` may return. Recall output lands in context too.
+    recall_limit: int = 5
+    #: Session rollover thresholds (`memory/rollover.py`). A backend session
+    #: resumed continuously for six months is untested and gets slower every
+    #: week; memory is what makes starting a fresh one survivable. Zero or
+    #: below disables that half of the policy.
+    session_max_age_hours: int = 168
+    session_max_turns: int = 500
+
+
 class WorkspaceConfig(BaseModel):
     root: str = "var/workspace"
     follow_symlinks_outside_root: bool = False
@@ -223,6 +256,7 @@ class NomadConfig(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)

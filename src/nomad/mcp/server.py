@@ -38,6 +38,8 @@ from nomad.mcp.hardware import (
     MockHid,
     ReadBatteryTool,
 )
+from nomad.mcp.memory import build_memory_tools
+from nomad.memory.store import MemoryStore
 from nomad.tools.base import Tool, ToolSpec
 from nomad.tools.builtin.system import GetSystemInfoTool
 from nomad.tools.permissions import GrantVault, ToolExecutor
@@ -57,14 +59,20 @@ def build_hardware_tools(
     battery: BatteryDriver | None = None,
     hid: HidDriver | None = None,
     prompter: ChoicePrompter | None = None,
+    store: MemoryStore | None = None,
 ) -> list[Tool]:
     """The tools Claude Code cannot bring for itself.
 
     Mocks by default, and the default is what the suite runs against (D9).
+
+    `store` is optional so every existing caller keeps working: with no store
+    there are no memory tools, rather than three tools that fail at call time.
+    A device wired without a database should look like a device with no
+    memory, not like one whose memory is broken.
     """
     display = display or MockDisplay()
     battery = battery or MockBattery()
-    return [
+    tools: list[Tool] = [
         GetSystemInfoTool(),
         DisplayTextTool(display),
         DisplayCardTool(display),
@@ -74,6 +82,9 @@ def build_hardware_tools(
         GetContextTool(battery),
         HidTypeTextTool(hid or MockHid()),
     ]
+    if store is not None:
+        tools.extend(build_memory_tools(store))
+    return tools
 
 
 def register_hardware_tools(registry: ToolRegistry, tools: list[Tool]) -> ToolRegistry:
