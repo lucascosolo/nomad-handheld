@@ -100,8 +100,8 @@ them. More files meant more places for the contract to drift.
 | F2 | **One screen, one writer (D36):** `ScreenOwner`/`ScreenView` arbitration; `AuthorizationPrompter` that is deliberately not a tool | `src/nomad/view/screen.py`, `src/nomad/view/authprompt.py`, `tests/test_authprompt.py` | `pytest tests/{test_authprompt,test_view,test_app}.py` | **DONE** |
 | V | **Voice:** `Recorder`/`Speaker`/`Transcriber`/`Synthesizer` protocols with mock defaults, `push_to_talk` action, a `speak` tool, no `listen` tool at any price | `src/nomad/audio/**`, `src/nomad/mcp/voice.py`, `tests/test_audio.py` | `pytest tests/test_audio.py` | **DONE** (D37) |
 | R | **Resource governance (D38):** two tiers as two *types*; heavy local compute yields to a live turn, the interface is structurally non-preemptible | `src/nomad/resources/**`, `tests/test_resources.py` | `pytest tests/test_resources.py` | **DONE** (D38) |
-| N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | TODO |
-| U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit/currency conversion, system status — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities.py` | `pytest tests/test_utilities.py` | TODO |
+| N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | **DONE** |
+| U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit conversion — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities_core.py` | `pytest tests/test_utilities_core.py` | **DONE** |
 | S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | TODO |
 | O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
 | P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
@@ -266,6 +266,42 @@ interrupted agent had changed nothing. **After interrupting or rejecting an
 agent, read `git status` before writing anything into the paths it owned.** The
 surviving tests turned out to pin the whole API, which is the only reason the
 overwrite was recoverable.
+
+**N + U — DONE.** A notification is a durable row, never a published event,
+because D6 drops slow subscribers on purpose and Nomad's screen is dark most of
+the time: "tea is ready" published to nobody has not been missed, it has ceased
+to exist. Delivery is *claimed* rather than fired — a sink that raises leaves
+the row pending for the next poll, which is the property the bus cannot offer.
+
+Two behaviours worth keeping, because both are the kind of thing that looks
+fine until the device has been off for a while:
+
+- **Repeats are calendar steps in a named zone, not fixed intervals.** `07:00
+  daily` computed as +86400s drifts an hour twice a year, and an alarm clock
+  that is an hour wrong for six months is not an alarm clock.
+- **A device off for a week fires one reminder, not a week of backlog.** A
+  repeat advances past `now` and stops. This is what separates a durable queue
+  from a replayed log.
+
+Timers and alarms contain no `asyncio.sleep` and no timer table at all — a
+timer is just a notification row with a `due_at`, so it survives the process
+restart that D34's rollover makes routine rather than exceptional.
+
+Verified by the coordinating session: full suite **634 passed**, ruff clean.
+
+Three things the subagent left broken, fixed here — **it reported before its
+last two test files were green**, which is the third time this has happened on
+this project:
+
+- `tests/test_context.py` referenced a fixture name that does not exist
+  (`rig_free_ctx` for `tool_ctx`), so the module errored on collection.
+- `build_hardware_tools()` grew `convert_units` and `world_clock`, breaking
+  three snapshot assertions in `tests/test_mcp_hardware.py`. Updated to 10
+  rather than reverted: the pure utilities need no driver, store or network,
+  so unlike the memory tools they are unconditional. Note the function's name
+  is now drifting — it builds hardware, memory *and* utility tools. Rename it
+  when something else touches that file; not worth the churn alone.
+- One `ruff` import-order error.
 
 ## Notes
 

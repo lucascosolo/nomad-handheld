@@ -88,6 +88,35 @@ recall_limit = 5
 session_max_age_hours = 168
 session_max_turns = 500
 
+# The durable notification queue. A notification is a persisted row, not an
+# event: the bus drops slow subscribers on purpose (D6) and this screen is dark
+# most of the time, so anything the device must still say later has to survive
+# a reboot and wait for something to be watching.
+[notifications]
+enabled = true
+# Resolved rows kept for audit before the oldest are pruned. Pending rows are
+# never pruned - a pending notification is a promise the device made.
+max_history = 200
+# How many due notifications one poll hands over. A device that was off for a
+# week wakes to a screenful, not a stampede.
+max_deliveries_per_poll = 10
+list_limit = 20
+# Default window before a timer or reminder is swept as stale, in minutes.
+# Showing a tea timer forty minutes late is worse than silence. Zero disables.
+default_expiry_minutes = 240
+
+# Offline daily utilities: timers, alarms, stopwatch, notes, world clock, unit
+# conversion. No network, no model - this is the seed corpus for the offline
+# tier, so every one of them answers with the radio off.
+[utilities]
+enabled = true
+# Longest timer that is plausibly a timer rather than a slipped decimal point.
+max_timer_hours = 48
+max_notes = 500
+note_search_limit = 10
+note_preview_chars = 200
+max_stopwatches = 8
+
 # Self-authored apps. (D25)
 [apps]
 root = "var/apps"

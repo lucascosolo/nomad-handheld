@@ -143,6 +143,53 @@ class MemoryConfig(BaseModel):
     session_max_turns: int = 500
 
 
+class NotificationsConfig(BaseModel):
+    """The durable queue, and the two ceilings that keep it usable.
+
+    Both limits exist because a notification queue fails in one direction far
+    more often than the other. Nobody complains that the device forgot to nag
+    them; they stop opening the list once it is forty rows of things that
+    already happened. So resolved rows are capped and pending rows are not —
+    a pending notification is a promise the device made, and the cap may only
+    ever fall on rows that already fired.
+    """
+
+    enabled: bool = True
+    #: Resolved rows kept for audit before the oldest are pruned. Pending rows
+    #: are never pruned, whatever this says.
+    max_history: int = 200
+    #: How many due notifications one poll hands to a sink. A device that was
+    #: off for a week should wake up to a screenful, not to a stampede.
+    max_deliveries_per_poll: int = 10
+    #: Rows one list call returns. This lands in the model's context.
+    list_limit: int = 20
+    #: Default window on a timer or reminder before it is swept as stale, in
+    #: minutes. Showing a tea timer forty minutes late is worse than silence.
+    #: Zero disables the default; a caller may always pass its own expiry.
+    default_expiry_minutes: int = 240
+
+
+class UtilitiesConfig(BaseModel):
+    """Timers, notes, stopwatches, conversions — the offline tier's seed corpus.
+
+    Nothing here reaches the network or a model, so the only limits worth
+    configuring are the ones that stop the device's own storage from becoming
+    the problem. `max_timer_hours` is not a safety bound; it is a typo bound.
+    """
+
+    enabled: bool = True
+    #: Longest timer that is plausibly a timer rather than a slipped decimal
+    #: point. Past this, use an alarm with a date.
+    max_timer_hours: int = 48
+    max_notes: int = 500
+    #: Notes returned by one search. Note bodies land in context.
+    note_search_limit: int = 10
+    #: Characters of a note body shown in a search result, before the full
+    #: note has to be asked for by id.
+    note_preview_chars: int = 200
+    max_stopwatches: int = 8
+
+
 class WorkspaceConfig(BaseModel):
     root: str = "var/workspace"
     follow_symlinks_outside_root: bool = False
@@ -315,6 +362,8 @@ class NomadConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    utilities: UtilitiesConfig = Field(default_factory=UtilitiesConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)

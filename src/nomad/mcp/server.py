@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from nomad.core.logging import get_logger
+from nomad.mcp.context import GetContextTool, MotionDriver
 from nomad.mcp.hardware import (
     BatteryDriver,
     ChoicePrompter,
@@ -30,7 +31,6 @@ from nomad.mcp.hardware import (
     DisplayDriver,
     DisplayListTool,
     DisplayTextTool,
-    GetContextTool,
     HidDriver,
     HidTypeTextTool,
     MockBattery,
@@ -39,11 +39,15 @@ from nomad.mcp.hardware import (
     ReadBatteryTool,
 )
 from nomad.mcp.memory import build_memory_tools
+from nomad.mcp.utilities import build_utility_tools
 from nomad.memory.store import MemoryStore
+from nomad.notifications.queue import NotificationQueue
 from nomad.tools.base import Tool, ToolSpec
 from nomad.tools.builtin.system import GetSystemInfoTool
 from nomad.tools.permissions import GrantVault, ToolExecutor
 from nomad.tools.registry import ToolRegistry
+from nomad.utilities.notes import NoteStore
+from nomad.utilities.stopwatch import StopwatchStore
 
 logger = get_logger(__name__)
 
@@ -59,7 +63,11 @@ def build_hardware_tools(
     battery: BatteryDriver | None = None,
     hid: HidDriver | None = None,
     prompter: ChoicePrompter | None = None,
+    motion: MotionDriver | None = None,
     store: MemoryStore | None = None,
+    notifications: NotificationQueue | None = None,
+    notes: NoteStore | None = None,
+    stopwatches: StopwatchStore | None = None,
 ) -> list[Tool]:
     """The tools Claude Code cannot bring for itself.
 
@@ -68,7 +76,10 @@ def build_hardware_tools(
     `store` is optional so every existing caller keeps working: with no store
     there are no memory tools, rather than three tools that fail at call time.
     A device wired without a database should look like a device with no
-    memory, not like one whose memory is broken.
+    memory, not like one whose memory is broken. The same rule governs the
+    utility tools: the pure ones (conversion, world clock) need nothing and are
+    always present, and the durable ones appear only once there is somewhere
+    durable to put them.
     """
     display = display or MockDisplay()
     battery = battery or MockBattery()
@@ -79,11 +90,16 @@ def build_hardware_tools(
         DisplayListTool(display),
         DisplayChoiceTool(display, prompter),
         ReadBatteryTool(battery),
-        GetContextTool(battery),
+        GetContextTool(battery, motion=motion),
         HidTypeTextTool(hid or MockHid()),
     ]
     if store is not None:
         tools.extend(build_memory_tools(store))
+    tools.extend(
+        build_utility_tools(
+            notifications=notifications, notes=notes, stopwatches=stopwatches
+        )
+    )
     return tools
 
 

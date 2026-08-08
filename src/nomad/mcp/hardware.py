@@ -14,15 +14,16 @@ like everything else — being reachable over MCP changes how a tool is
 chunk E. Until then these tools talk to the narrow protocols below, which is
 also what lets the whole surface be tested with no hardware attached (D9).
 Chunk E implements these protocols; it should not need to touch this file.
+
+**One tool per piece of silicon.** `get_context` moved to `mcp/context.py` in
+chunk N: it is a composite read across clock, battery, radio and motion, and
+every widening of it was widening this module for something that is not a
+facade. What stays here is the boring part — one protocol, one mock, one tool,
+per device.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import time
-from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -350,90 +351,6 @@ class ReadBatteryTool:
             percent=status.percent,
             charging=status.charging,
             voltage=status.voltage,
-        )
-
-
-NetworkCheck = Callable[[], Awaitable[bool]]
-
-
-async def _default_network_check() -> bool:
-    """A quick, best-effort reachability probe. Never raises — offline is a
-    normal answer, not a failure of this tool."""
-    try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection("1.1.1.1", 53), timeout=1.5
-        )
-    except (OSError, TimeoutError):
-        return False
-    writer.close()
-    with contextlib.suppress(Exception):
-        await writer.wait_closed()
-    return True
-
-
-class GetContextParams(BaseModel):
-    """No parameters."""
-
-
-class GetContextTool:
-    """Ambient context: local time, battery, network reachability, uptime.
-
-    "Understands my needs" is mostly knowing what time it is and whether the
-    operator is on battery. Read-only, cheap, no prompts — a later trigger
-    layer polls this to decide *when* to speak, rather than firing at random.
-
-    `network_check` and `clock` are injectable so tests never depend on real
-    network access or wall-clock time. `started_at` anchors "uptime" to when
-    this tool was constructed — a process-uptime proxy, not a system call,
-    since there is no hardware-backed uptime source yet.
-    """
-
-    spec = ToolSpec(
-        name="get_context",
-        description=(
-            "Report local time, battery state, network reachability and uptime — "
-            "the operator's ambient context."
-        ),
-        params_model=GetContextParams,
-        risk=Risk.READ_ONLY,
-        permissions=frozenset(),
-        required_capabilities=frozenset(),
-    )
-
-    def __init__(
-        self,
-        battery: BatteryDriver,
-        *,
-        network_check: NetworkCheck | None = None,
-        clock: Callable[[], datetime] | None = None,
-        started_at: float | None = None,
-    ) -> None:
-        self._battery = battery
-        self._network_check = network_check or _default_network_check
-        self._clock = clock or (lambda: datetime.now().astimezone())
-        self._started_at = time.monotonic() if started_at is None else started_at
-
-    async def execute(self, params: GetContextParams, ctx: ToolContext) -> ToolResult:
-        status = await self._battery.read()
-        moment = self._clock()
-        reachable = await self._network_check()
-        uptime_seconds = max(0.0, time.monotonic() - self._started_at)
-        tz_name = moment.tzname() or "UTC"
-        state = "charging" if status.charging else "discharging"
-        summary = (
-            f"{moment.strftime('%Y-%m-%d %H:%M')} {tz_name}, "
-            f"battery {status.percent:.0f}% ({state}), "
-            f"network {'reachable' if reachable else 'unreachable'}, "
-            f"up {uptime_seconds:.0f}s"
-        )
-        return ToolResult.success(
-            summary,
-            local_time=moment.isoformat(),
-            timezone=tz_name,
-            battery_percent=status.percent,
-            charging=status.charging,
-            network_reachable=reachable,
-            uptime_seconds=uptime_seconds,
         )
 
 

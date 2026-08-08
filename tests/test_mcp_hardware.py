@@ -111,20 +111,26 @@ def test_the_toolset_is_what_claude_code_cannot_bring() -> None:
         "read_battery",
         "get_context",
         "hid_type_text",
+        # Chunk U. Pure utilities: no drivers, no store, no network, so unlike
+        # the memory tools they are unconditional. Claude Code can convert a
+        # unit by shelling out to python; it cannot do it with the network
+        # down, which is the whole point of the offline tier (chunk O).
+        "convert_units",
+        "world_clock",
     }
 
 
 def test_the_toolset_defaults_to_mocks() -> None:
     """Mock is the default everywhere, so the suite runs with no hardware (D9)."""
     tools = build_hardware_tools()
-    assert len(tools) == 8
+    assert len(tools) == 10
 
 
 def test_registering_hardware_twice_is_harmless() -> None:
     registry = ToolRegistry()
     register_hardware_tools(registry, build_hardware_tools())
     register_hardware_tools(registry, build_hardware_tools())
-    assert len(registry.names()) == 8
+    assert len(registry.names()) == 10
 
 
 def test_the_server_name_matches_what_the_bridge_strips() -> None:
@@ -211,7 +217,7 @@ async def test_get_context_reports_time_battery_network_and_uptime(rig) -> None:
     precisely so this never depends on real network access or wall time."""
     from datetime import datetime
 
-    from nomad.mcp.hardware import GetContextParams, GetContextTool
+    from nomad.mcp.context import GetContextParams, GetContextTool
 
     rig["battery"].status = BatteryStatus(percent=55.0, charging=False, voltage=3.8)
 
@@ -241,7 +247,7 @@ async def test_get_context_reports_time_battery_network_and_uptime(rig) -> None:
 
 
 async def test_get_context_survives_an_unreachable_network(rig) -> None:
-    from nomad.mcp.hardware import GetContextParams, GetContextTool
+    from nomad.mcp.context import GetContextParams, GetContextTool
 
     async def unreachable() -> bool:
         return False

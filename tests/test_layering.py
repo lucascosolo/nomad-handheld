@@ -30,6 +30,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 EVERYTHING = {
     "core", "protocol", "storage", "targets", "hardware", "input",
     "memory", "tools", "mcp", "agent", "view", "audio", "resources",
+    "notifications", "utilities",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -53,8 +54,21 @@ ALLOWED: dict[str, set[str]] = {
     # resource policy above the session for no gain — the coupling is on the
     # vocabulary either way, and `test_resources.py` pins it as text.
     "resources": {"core"},
+    # D6 is why this package exists: the bus drops slow subscribers, so
+    # anything the device must still say after a reboot is a row. That makes
+    # it a peer of `memory` — an index over storage, below the loop, and
+    # deliberately *not* allowed to see `resources`. D38 puts the queue in the
+    # interactive tier, but registering it there is the composition root's job;
+    # an import here would put a resource policy underneath storage.
+    "notifications": {"core", "storage"},
+    # Timers and alarms are notifications, which is the whole reason chunk N
+    # landed first. Nothing else: these must answer with the radio off.
+    "utilities": {"core", "storage", "notifications"},
     "tools": {"core", "storage", "targets"},
-    "mcp": {"core", "storage", "targets", "tools", "memory", "audio"},
+    "mcp": {
+        "core", "storage", "targets", "tools", "memory", "audio",
+        "notifications", "utilities",
+    },
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary
     # and hold the `DisplayDriver` protocol; they own no state.

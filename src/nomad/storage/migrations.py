@@ -172,9 +172,131 @@ async def _migration_002_memories(db: Database) -> None:
     )
 
 
+async def _migration_003_notifications(db: Database) -> None:
+    """The durable notification queue (chunk N).
+
+    **This table is the answer to D6.** The event bus drops slow subscribers on
+    purpose so a stalled client cannot freeze the display — correct for events,
+    fatal for a timer, because Nomad's screen is dark most of the time and its
+    process restarts. A notification published to nobody has not been missed;
+    it has ceased to exist. So it is a row, and "delivery" is a state
+    transition something performs later.
+
+    `state` is a column rather than a set of nullable timestamps because the
+    dedup rule is scoped to one of its values and a partial index can only
+    reference what is actually stored. The index below is the load-bearing
+    line: **at most one *pending* row per `dedup_key`.** A caller polling a
+    condition every thirty seconds folds into one row; an alarm that already
+    rang this morning has freed its key and may ring again tomorrow. Scoping
+    uniqueness to `pending` — rather than to "not cancelled" — is what lets one
+    table serve both cases without a second concept.
+
+    `repeat_rule` is text, not seconds, because a daily alarm is not 86400
+    seconds: fixed-interval arithmetic drifts an hour twice a year, and
+    `repeat_tz` is what `notifications/repeat.py` re-anchors 07:00 to. A
+    re-armed occurrence is a **new row** — the fired one stays terminal, so the
+    record of what went off when survives the repeat.
+
+    No foreign key to `sessions`: a timer set on Tuesday must outlive the
+    session that set it, including the rollover in D34.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            dedup_key TEXT NOT NULL,
+            kind TEXT NOT NULL
+                CHECK (kind IN ('timer', 'alarm', 'reminder', 'system', 'agent')),
+            state TEXT NOT NULL
+                CHECK (state IN (
+                    'pending', 'delivered', 'acknowledged', 'expired', 'cancelled'
+                )),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            expires_at TEXT,
+            delivered_at TEXT,
+            resolved_at TEXT,
+            repeat_rule TEXT,
+            repeat_tz TEXT,
+            raise_count INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'agent',
+            payload_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_open_dedup "
+        "ON notifications(dedup_key) WHERE state = 'pending'"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notifications_due ON notifications(state, due_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notifications_kind ON notifications(kind)"
+    )
+
+
+async def _migration_004_utilities(db: Database) -> None:
+    """Notes and stopwatches (chunk U).
+
+    Timers and alarms are deliberately **absent** here: a timer is a row in
+    `notifications`, because "fires once, durably, when something is finally
+    watching" is precisely what that table already is. A second table would
+    have needed its own delivery path, its own dedup rule and its own catch-up
+    behaviour after a reboot, and would have got at least one of them wrong.
+
+    A stopwatch is stored as `(started_at, accumulated_seconds, running)`
+    rather than as an elapsed number, so reading it is arithmetic against the
+    current time and nothing has to tick. That is what makes it survive the
+    screen going off and the process restarting without a task anywhere.
+
+    Notes carry `deleted_at` rather than being deleted, matching `memories`: on
+    a device with no undo button, a soft delete is the difference between a
+    mistake and a loss.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notes (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at)")
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stopwatches (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            running INTEGER NOT NULL DEFAULT 1,
+            started_at TEXT,
+            accumulated_seconds REAL NOT NULL DEFAULT 0.0,
+            laps_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            stopped_at TEXT
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_stopwatches_running ON stopwatches(running)"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _migration_001_initial_schema,
     _migration_002_memories,
+    _migration_003_notifications,
+    _migration_004_utilities,
 ]
 
 
