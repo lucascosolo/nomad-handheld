@@ -691,6 +691,56 @@ rather than after the first app is written.
 
 ---
 
+## D30 — The wire format, ratified (and corrected on contact with code)
+
+**Accepted.** `docs/ARCHITECTURE.md` carried this as an explicit draft, on the
+grounds that freezing a wire format on paper before code exists is how you ship
+a bad one. That caution paid for itself: implementing it in chunk E1 found the
+drafted framing could not recover from the failure it was designed for.
+
+Three corrections to the draft, all now in `src/nomad/protocol/`:
+
+1. **A 2-byte `SYNC` preamble (`a7 5e`), and the CRC32 now covers the `length`
+   field as well as the body.** The draft trusted `length` unconditionally. One
+   flipped bit in that prefix therefore made the parser skip the wrong number of
+   bytes, and *every* subsequent frame was garbage — permanently, on exactly the
+   flaky-USB-cable failure mode length-prefixing exists to survive. The invariant
+   that has to hold is "a single flipped bit costs one frame, never the link",
+   and the draft could not deliver it. Together the two changes collapse both
+   corruption cases into one rule: after a checksum failure, never trust
+   `length` — scan forward for the next `SYNC`. Cost: two bytes per frame.
+2. **Frames are capped** (`max_frame_bytes`, default 65536, per-link
+   overridable). Unspecified in the draft, and without it a corrupt length
+   prefix is an allocation of hundreds of megabytes on a 4 GB Pi.
+3. **The catalogue is keyed by link, not by type string alone.** The draft gave
+   `system.status` two different payload shapes on the two links, violating its
+   own rule 3 ("never repurpose a `type` string for a different payload shape").
+   Mint distinct type strings if a third link ever appears.
+
+Two judgement calls worth knowing about, because neither is measured:
+
+- **Envelope strictness is `extra="ignore"`.** Forbidding unknown fields would
+  let one added firmware field kill every frame, which is the opposite of the
+  additive-extension rule.
+- **A `seq` reset is always read as a reboot**, never as counter wrap. The two
+  are undecidable from the wire, and a spurious handshake every ~4×10⁹ frames is
+  cheaper than assuming continuity across a real reboot.
+
+**The firmware must be written against the code, not against an older copy of
+the doc.** No firmware exists yet, which is why this was the free moment to fix
+the format.
+
+Still open, deliberately: `display.draw` cannot travel through JSON — raw pixels
+are not JSON, and a 64×64 RGB565 region measures 8192 bytes of payload in an
+11055-byte frame, 35% overhead, on a link shared with input. That measurement is
+the concrete trigger for swapping in a binary codec, and it is the exact swap D2
+was designed to make cheap.
+
+*Cost to change:* High. Envelope or framing changes require both sides in
+lockstep; there is no negotiation below the envelope.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

@@ -414,11 +414,12 @@ mid-turn, not merely data loss. Turn state persists *before* execution
 
 # Protocol
 
-**Status: draft.** The framing layout and message catalogue below are a
-first design, not a ratified decision. They get ratified into DECISIONS.md
-once chunk E implements them — deliberately, because freezing a wire format
-on paper before code exists is how you ship a bad one. D3's
-`type`/`id`/`seq`/`payload` envelope *is* decided; the byte layout is not.
+**Status: ratified as D30**, and the implementation corrected the draft in
+three places — see D30 for what changed and why. Freezing a wire format on
+paper before code exists is how you ship a bad one, which is precisely what
+nearly happened here: the drafted framing could not recover from a corrupt
+length prefix. The `type`/`id`/`seq`/`payload` envelope (D3) survived
+unchanged.
 
 Both links are USB CDC serial: Pi ↔ ESP32-S3 (display/input) and Pi ↔
 RP2040-Zero (HID output).
@@ -448,17 +449,29 @@ Pi uses to detect that a reboot happened — it then discards pending requests
 on that link and re-establishes state via `system.hello`/`system.status`
 rather than assuming continuity.
 
-Draft framing on the wire:
+Framing on the wire (**ratified as D30** when chunk E1 implemented it — this
+is no longer a draft, and it is not what the draft said):
 
 | Bytes | Field | Notes |
 |---|---|---|
+| 2 | `SYNC` (`a7 5e`) | Resync anchor |
 | 4 | `length` (u32 LE) | Length of `frame_body` only |
 | `length` | `frame_body` | Codec-encoded `Message` |
-| 4 | `checksum` (CRC32 LE) | Over `frame_body` only |
+| 4 | `checksum` (CRC32 LE) | Over the `length` field **and** `frame_body` |
 
 Length-prefixed rather than sentinel-delimited, so a binary codec never has
 to escape a delimiter appearing in the body. A checksum failure is treated
 as frame loss — it bumps expected `seq`, it does not kill the link.
+
+The `SYNC` preamble and the checksum's coverage of `length` are the
+correction D30 records: without them, a single flipped bit in the `length`
+prefix makes the parser skip the wrong number of bytes and **every**
+subsequent frame is garbage, permanently — on exactly the flaky-USB failure
+mode this format exists to survive. Together they collapse both corruption
+cases into one rule: *after a checksum failure, never trust `length` — scan
+forward for the next `SYNC`.* Frames are also capped (`max_frame_bytes`,
+default 65536) so a corrupt length cannot make the Pi allocate hundreds of
+megabytes.
 
 ## Message catalogue (draft)
 
@@ -472,11 +485,17 @@ as frame loss — it bumps expected `seq`, it does not kill the link.
 | `input.touch` | ESP32 → Pi | `{x, y, phase: down\|move\|up}` |
 | `input.joystick` | ESP32 → Pi | `{x: -1.0..1.0, y: -1.0..1.0}` |
 | `input.button` | ESP32 → Pi | `{button: a\|b\|x\|y, phase: press\|release}` |
-| `audio.mic_stream` | ESP32 → Pi | `{seq, samples}` — chunked PCM |
-| `audio.speaker` | Pi → ESP32 | `{seq, samples}` — chunked PCM |
 | `system.hello` | either | `{firmware_version, capabilities}` — on connect |
 | `system.status` | ESP32 → Pi | `{uptime_ms, free_heap, last_seq_seen}` |
 | `system.error` | either | `{code, message}` |
+
+**Audio is deliberately absent from this link.** An earlier draft carried
+`audio.mic_stream` and `audio.speaker` here. It does not fit: 16 kHz 16-bit
+mono is ~256 kbit/s of raw PCM before any framebuffer traffic, and the link
+is 921600 baud shared with `display.draw`. Voice is the device's primary
+input method (chunk V), so it does not get to contend with the screen for
+bandwidth. Microphone and speaker hang off the **Pi** — USB or I2S — and
+`nomad.audio` never touches this transport.
 
 The `input.*` values above are physical and device-local. They are
 normalized into logical actions immediately on receipt by `nomad.input` and
