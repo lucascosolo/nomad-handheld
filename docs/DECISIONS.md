@@ -990,13 +990,29 @@ and a codec, not a DSP — the same reasoning as D17, one tier down. It captures
 and plays; speech-to-text and text-to-speech are Pi workloads, and therefore
 governed workloads (D38).
 
-*Unverified, and it must be verified before firmware:* that this specific
-module (Hosyond ESP32-S3, UPC 712490971738) has a usable mic and amplifier,
-and that TinyUSB's UAC support co-exists with CDC on it. If composite UAC
-proves impractical, the fallback is a second CDC interface for audio, never
-sharing the first. **None of this reaches the software written now** — chunk V
-codes against `Recorder`/`Speaker` protocols with mock defaults, so the real
-driver is a leaf that opens a sound device, whichever way that device arrives.
+**Verified on the device, 2026-08-08, and simpler than the above.** With the Pi
+powered up, `lsusb` and ALSA report what is actually there:
+
+| Function | Reality |
+|---|---|
+| Microphone | C-Media USB PnP Sound Device, `08bb:2902`, ALSA card 1 — **capture only** |
+| Speaker | The Pi's own 3.5 mm jack, `bcm2835 Headphones`, ALSA card 0 (HDMI also present) |
+| ESP32-S3 | **Not on the Pi's USB bus at all.** No Espressif VID, no `/dev/ttyACM*` |
+
+So audio is already two ordinary ALSA devices on the Pi, and the composite
+CDC-plus-UAC firmware described above is **not on the critical path for voice**.
+It stays recorded as the design *if* audio ever moves onto the module, because
+the constraint that motivated it does not change: audio bytes must never share
+the control link with framebuffer deltas and input.
+
+What this does not change is the software, which is the point of having built
+it against protocols with mock defaults — the real driver is a leaf that opens
+a sound device, and it now has a specific device to open. What it does change is
+risk: no firmware work stands between here and a working microphone.
+
+*Still unverified:* whether the Hosyond module (UPC 712490971738) has a usable
+mic and amplifier of its own. That question is now optional rather than
+blocking, and should not be answered by guessing.
 
 **Who may open the microphone.** The model may speak. D35 already settled the
 shape of that argument for the screen — Nomad's own output surface is not the
