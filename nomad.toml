@@ -142,5 +142,12 @@ y = "ACTION_2"
 
 [input.joystick]
 deadzone = 0.25
-repeat_delay_ms = 400
-repeat_interval_ms = 120
+# Fraction of the deadzone a stick must fall back below to count as centred
+# again. Stops a stick resting on the threshold scrolling a menu on its own.
+hysteresis = 0.7
+
+# Hold-to-repeat, for buttons and the stick alike — a held button repeats too,
+# which is why this is not under [input.joystick].
+[input.repeat]
+delay_ms = 400
+interval_ms = 120

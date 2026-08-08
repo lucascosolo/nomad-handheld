@@ -185,8 +185,23 @@ class InputButtonsConfig(BaseModel):
 
 class InputJoystickConfig(BaseModel):
     deadzone: float = 0.25
-    repeat_delay_ms: int = 400
-    repeat_interval_ms: int = 120
+    #: Fraction of `deadzone` a stick must fall back below before it counts as
+    #: centred again. Without this a stick resting on the threshold chatters
+    #: between "centred" and "up" and a menu scrolls on its own.
+    hysteresis: float = Field(default=0.7, gt=0.0, le=1.0)
+
+
+class InputRepeatConfig(BaseModel):
+    """Hold-to-repeat timing, shared by buttons and the stick.
+
+    Deliberately not under `[input.joystick]`, where it started: a held *button*
+    repeats too, and reading button timing out of the joystick's config is the
+    kind of thing that is merely odd until someone wants the two to differ and
+    finds they cannot. Neither field mentions the stick; only its location did.
+    """
+
+    delay_ms: int = 400
+    interval_ms: int = 120
 
 
 class InputConfig(BaseModel):
@@ -195,6 +210,7 @@ class InputConfig(BaseModel):
     extra_actions: list[str] = Field(default_factory=list)
     buttons: InputButtonsConfig = Field(default_factory=InputButtonsConfig)
     joystick: InputJoystickConfig = Field(default_factory=InputJoystickConfig)
+    repeat: InputRepeatConfig = Field(default_factory=InputRepeatConfig)
 
 
 class NomadConfig(BaseModel):
