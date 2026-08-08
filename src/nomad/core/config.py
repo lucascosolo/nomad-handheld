@@ -221,6 +221,32 @@ class AudioConfig(BaseModel):
     max_record_seconds: float = 30.0
 
 
+class ResourcesConfig(BaseModel):
+    """When background work yields the machine, and how long it gets (D38).
+
+    Three numbers, and each one is a different failure being bounded.
+
+    `suspend_deadline_seconds` is how long a workload has to park after being
+    asked. Too short kills workloads that were about to cooperate; too long is
+    a device that stays laggy for that many seconds after the operator speaks.
+
+    `terminate_grace_seconds` is the window after cancellation before the
+    governor gives up and abandons the task. It is short because by this point
+    the workload has already broken its contract twice.
+
+    `resume_delay_seconds` is hysteresis, and the only one that is not about
+    misbehaviour. Turns arrive in bursts; resuming an indexer in the gap
+    between two of them pays a full suspend/resume cycle per turn for a
+    fraction of a second of work.
+    """
+
+    #: Read by the composition root, which registers workloads or does not.
+    enabled: bool = True
+    suspend_deadline_seconds: float = 5.0
+    terminate_grace_seconds: float = 1.0
+    resume_delay_seconds: float = 3.0
+
+
 class CameraConfig(BaseModel):
     driver: str = "mock"
 
@@ -298,6 +324,7 @@ class NomadConfig(BaseModel):
     view: ViewConfig = Field(default_factory=ViewConfig)
     usb_hid: UsbHidConfig = Field(default_factory=UsbHidConfig)
     battery: BatteryConfig = Field(default_factory=BatteryConfig)
+    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)
     sensors: SensorsConfig = Field(default_factory=SensorsConfig)
     transports: TransportsConfig = Field(default_factory=TransportsConfig)

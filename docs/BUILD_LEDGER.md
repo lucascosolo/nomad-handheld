@@ -98,11 +98,11 @@ them. More files meant more places for the contract to drift.
 | M | **Memory Nomad owns:** durable owner memory + `remember`/`recall`/`forget` MCP tools; session rollover carries it forward | `src/nomad/memory/**`, migration, `tests/test_memory.py` | `pytest tests/test_memory.py` | **DONE** (D33, D34) |
 | F1 | Composition root wired; the screen is never blank | `src/nomad/app.py`, `src/nomad/view/renderer.py`, `src/nomad/view/server.py` | `pytest tests/{test_app,test_view}.py` | **DONE** |
 | F2 | **One screen, one writer (D36):** `ScreenOwner`/`ScreenView` arbitration; `AuthorizationPrompter` that is deliberately not a tool | `src/nomad/view/screen.py`, `src/nomad/view/authprompt.py`, `tests/test_authprompt.py` | `pytest tests/{test_authprompt,test_view,test_app}.py` | **DONE** |
-| V | **Voice:** `Recorder`/`Speaker`/`Transcriber`/`Synthesizer` protocols with mock defaults, `push_to_talk` action, a `speak` tool, audio on the Pi — never the ESP32 link | `src/nomad/audio/**`, `src/nomad/mcp/voice.py`, `tests/test_audio.py` | `pytest tests/test_audio.py` | TODO |
-| R | **Resource governance (D39):** a `Workload` registry with priority tiers; heavy local compute yields to an online Claude turn, the UI and tool endpoints are never preemptible | `src/nomad/resources/**`, `tests/test_resources.py` | `pytest tests/test_resources.py` | TODO |
+| V | **Voice:** `Recorder`/`Speaker`/`Transcriber`/`Synthesizer` protocols with mock defaults, `push_to_talk` action, a `speak` tool, no `listen` tool at any price | `src/nomad/audio/**`, `src/nomad/mcp/voice.py`, `tests/test_audio.py` | `pytest tests/test_audio.py` | **DONE** (D37) |
+| R | **Resource governance (D38):** two tiers as two *types*; heavy local compute yields to a live turn, the interface is structurally non-preemptible | `src/nomad/resources/**`, `tests/test_resources.py` | `pytest tests/test_resources.py` | **DONE** (D38) |
 | N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | TODO |
 | U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit/currency conversion, system status — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities.py` | `pytest tests/test_utilities.py` | TODO |
-| S | **Skills (D38):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | TODO |
+| S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | TODO |
 | O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
 | P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
@@ -204,6 +204,68 @@ Two findings were code, not plan, and are fixed: the SSH `never_auto` bypass
 retired by D19; the permission pipeline, targets and all of `core` carry over
 intact. Do not treat the retirement as lost work — the expensive half of D was
 the broker, and it survives with *more* weight than before (D21).
+
+**V — DONE.** Protocols with inspectable mocks as the default, real engines
+named but unimplemented (the `targets/ssh.py` pattern — the seam exists, the
+dependency does not). No new dependencies.
+
+Two things worth not relearning:
+
+- **`Recorder.capture(*, max_duration_s)` is one bounded call**, not start/stop
+  and not an async iterator. The bound is a required keyword on the protocol's
+  only method, so unbounded capture is not expressible, and the driver enforces
+  it rather than trusting a push-to-talk handler to win a race against a stuck
+  key.
+- **The no-`listen` test had a hole and it is now closed.** Scanning imports
+  alone missed `import nomad.audio.drivers` → `drivers.Recorder()`, which is the
+  same capability by the spelling someone in a hurry would actually write. It
+  now rejects any use of the name in code position (`ast.Name`/`ast.Attribute`),
+  which leaves docstrings free to argue the case. Confirmed by injecting that
+  exact bypass and watching it fail — a security test never run red is not
+  known to work.
+
+Verified by the coordinating session: full suite **529 passed**, ruff clean.
+
+Still open for a later chunk: nothing wires audio into `app.py`, and there is
+no path yet carrying transcribed speech into `AgentSession` as a turn input.
+
+**R — DONE.** `InteractiveWorkload` and `OpportunisticWorkload` are two
+*classes*, not one class with a tier field, so "suspend the screen" is not an
+expression this codebase can form — the interactive base has no `run`, no
+`suspend` and no task to cancel. Cooperation happens through a `YieldContext`
+the governor owns: a well-behaved workload parks at its next `checkpoint()`
+without spending a tick of the deadline, one that will not park is cancelled,
+and one that swallows cancellation is abandoned after a grace window, because
+there is no SIGKILL for a coroutine.
+
+Two bugs found by running it, both worth not reintroducing:
+
+- **Workloads registered before `start()` were never launched.** `_resume_all`
+  only looked at `SUSPENDED` entries, so anything still `REGISTERED` sat idle
+  forever. Boot now applies the policy directly instead of going through the
+  hysteresis path — there is no previous turn at boot whose follow-up we might
+  be sitting in.
+- **The resume timer was armed asynchronously.** `_schedule_resume` used a bare
+  `ensure_future`, which returns before the new task runs a line, so a caller
+  that observed `turn_finished` and then advanced time by the resume delay
+  moved *past* a timer that did not exist yet. On the device that is background
+  work stranded until the next turn ends. Fixed with an `armed` handshake,
+  which relies on `Clock.sleep` registering its wakeup before its first
+  suspension point — now stated as part of the protocol's contract.
+
+Verified by the coordinating session: `tests/test_resources.py` **21 passed in
+2.18s** and green on three consecutive runs (no real sleeps anywhere — every
+delay goes through `ManualClock`), full suite **551 passed**, ruff clean.
+
+**A process lesson that cost real time here.** Chunk R was first dispatched to a
+subagent which was interrupted partway. Its writes had *already landed on
+disk* — `clock.py`, `workload.py`, a 589-line test file, the config and TOML
+entries — and the coordinating session then wrote its own `governor.py`,
+`errors.py` and `__init__.py` straight over three of them, having assumed an
+interrupted agent had changed nothing. **After interrupting or rejecting an
+agent, read `git status` before writing anything into the paths it owned.** The
+surviving tests turned out to pin the whole API, which is the only reason the
+overwrite was recoverable.
 
 ## Notes
 

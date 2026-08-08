@@ -139,6 +139,19 @@ synthesizer_driver = "mock"    # mock | piper
 # forever - enforced by the driver, not by the operator releasing it. (D37)
 max_record_seconds = 30.0
 
+[resources]
+# Background work yields the machine while a turn is live; the interface never
+# yields to anything. (D38)
+enabled = true
+# How long an opportunistic workload has to park after being asked, before it
+# is cancelled. Cooperative first, fatal second - "it will cooperate" is not an
+# available assumption when the workload is model-authored (D25, D29).
+suspend_deadline_seconds = 5.0
+terminate_grace_seconds = 1.0
+# Hysteresis. Turns arrive in bursts; do not resume heavy work in the gap
+# between two of them.
+resume_delay_seconds = 3.0
+
 [usb_hid]
 driver = "mock"          # mock | rp2040
 

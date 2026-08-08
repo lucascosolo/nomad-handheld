@@ -988,7 +988,7 @@ than shipping a stutter.
 **Where audio is computed.** On the Pi, always. The ESP32-S3 is a transducer
 and a codec, not a DSP — the same reasoning as D17, one tier down. It captures
 and plays; speech-to-text and text-to-speech are Pi workloads, and therefore
-governed workloads (D39).
+governed workloads (D38).
 
 *Unverified, and it must be verified before firmware:* that this specific
 module (Hosyond ESP32-S3, UPC 712490971738) has a usable mic and amplifier,
@@ -1020,6 +1020,57 @@ path — never a tool, and never a transcript the model receives unprompted.
 *Cost to change:* Low today. High after any audio message type reaches the
 wire format or any model-callable capture tool exists — both are contracts
 that get depended on quietly.
+
+---
+
+## D38 — Local compute yields to Claude; the interface never yields to anything
+
+The Pi has 4 GB and four cores, and wants to run things that do not fit
+together: a Claude Code subprocess, a speech-to-text model, whatever offline
+handlers chunk O promotes, and the interface. When the operator is talking to
+Claude, Claude should get the machine.
+
+So every background consumer of real CPU or memory registers as a `Workload`
+in one of two tiers, and the tier is a promise about *preemption*, not a
+priority number to be tuned:
+
+- **`INTERACTIVE` — never preempted, by anything, ever.** The screen, the input
+  stream, the notification queue, the tool endpoints, and the authorization
+  prompt. This tier exists so that "Nomad is busy" can never become "Nomad is
+  unresponsive". A device that stops answering its own buttons while it thinks
+  is indistinguishable from a crashed one.
+- **`OPPORTUNISTIC` — suspended whenever a turn is live.** Index building,
+  promotion analysis, model warmup, anything speculative. These exist to make
+  the device better later, and later is always negotiable.
+
+**Speech-to-text is `INTERACTIVE`, and this is the subtle one.** It is the
+heaviest thing on the device and the obvious candidate for suspension, and
+suspending it is exactly wrong: transcription is how the operator *speaks*, and
+they speak most while a turn is running. A device that goes deaf whenever it is
+busy has no input method at the only moment one matters. Heaviness picks the
+tier it feels like; being on the path from operator to machine picks the tier it
+gets.
+
+**Suspension is cooperative first and fatal second.** A workload is asked to
+yield and given a deadline; one that misses the deadline is killed. Cooperative
+alone is a workload that ignores the request, which is the bug this decision
+exists to prevent — and a promoted offline handler is model-authored code
+(D25, D29), so "it will cooperate" is not an assumption available here.
+
+**The governor fails toward responsiveness.** If it cannot determine whether a
+turn is live, it suspends opportunistic work: the cost of being wrong is
+finishing an index late, against a laggy device. And the governor must never be
+able to suspend an `INTERACTIVE` workload even if asked — that is a structural
+property, not a policy check, or the first bug in it takes the UI down.
+
+**Tool endpoints stay up while offline work is suspended.** Suspending a
+*workload* never deregisters a *tool*: the model must be able to call anything
+at any time, and get an answer computed on demand. Availability and background
+processing are different things, and conflating them is how "we paused the
+indexer" becomes "the search tool disappeared".
+
+*Cost to change:* Low now. High once four workloads exist and each has invented
+its own throttling.
 
 ---
 

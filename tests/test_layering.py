@@ -29,7 +29,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 #: Everything below the composition root. `app.py` may import all of it.
 EVERYTHING = {
     "core", "protocol", "storage", "targets", "hardware", "input",
-    "memory", "tools", "mcp", "agent", "view", "audio",
+    "memory", "tools", "mcp", "agent", "view", "audio", "resources",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -48,6 +48,11 @@ ALLOWED: dict[str, set[str]] = {
     # never Nomad's wire codec, so a driver here is a leaf that opens a sound
     # device directly. Widening this edge is exactly the regression D37 names.
     "audio": {"core"},
+    # D38: the governor decides whether a turn is live by watching the bus for
+    # two event *names*. Importing `agent` for those two constants would put a
+    # resource policy above the session for no gain — the coupling is on the
+    # vocabulary either way, and `test_resources.py` pins it as text.
+    "resources": {"core"},
     "tools": {"core", "storage", "targets"},
     "mcp": {"core", "storage", "targets", "tools", "memory", "audio"},
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
@@ -162,6 +167,17 @@ def test_memory_imports_only_core_and_storage() -> None:
     """D33: memory is an index over storage, not a participant in the loop."""
     for path in sorted((SRC / "memory").rglob("*.py")):
         assert _nomad_imports(path) <= {"core", "storage", "memory"}
+
+
+def test_resources_imports_only_core() -> None:
+    """D38: the governor watches for turn *events*, it does not know the agent.
+
+    The moment `resources` imports `agent`, the cheapest way to answer "is a
+    turn live?" becomes calling into the session, and a policy that must keep
+    working while the session is wedged is coupled to the session.
+    """
+    for path in sorted((SRC / "resources").rglob("*.py")):
+        assert _nomad_imports(path) <= {"core", "resources"}
 
 
 def test_hardware_does_not_import_its_own_facade() -> None:
