@@ -322,6 +322,139 @@ failure mode has to be a clean park, not a corrupted partial write.
 
 ---
 
+## D19 — Claude Code is the agent loop, not a model behind it
+
+**Accepted. Supersedes the loop half of D11 and D16.**
+
+Nomad does not implement its own think→tool→observe loop. It runs **Claude Code
+headless** via the Python Agent SDK (`claude-agent-sdk`) and acts as the harness
+around it.
+
+```
+Claude Code  ── the loop, the tools, compaction, web search, sub-agents
+   │
+   ├─ can_use_tool  ──→  Nomad PermissionBroker  ──→  touchscreen approval
+   └─ MCP server    ←──  Nomad hardware (display, HID, battery, input, sensors)
+```
+
+*Why:* Three separate goals — subscription billing rather than per-token API
+cost, coding competence equal to Claude Code, and eventual self-modification —
+all resolve the same way. Wrapping the CLI as a plain text-completion endpoint
+would capture the billing win and forfeit the competence win, and would put two
+permission systems in conflict over the same tool call.
+
+**What this retires:** `agent/loop.py` (turn state machine) and `agent/context.py`
+(compaction) — Claude Code does both better. **What it keeps:** the entire
+permission pipeline (D4), the target abstraction (D12), and all of `core`.
+Nomad's built-in filesystem tools are retired in favour of Claude Code's; Nomad's
+MCP tools become *hardware* tools, which Claude Code has no equivalent for.
+
+*Cost to change:* Medium. The SDK boundary is narrow and the permission broker is
+independent of it.
+
+---
+
+## D20 — Subscription auth via OAuth token; never `--bare`
+
+**Accepted.**
+
+Authentication uses `claude setup-token` on a trusted machine, with the result
+stored on the Pi as `CLAUDE_CODE_OAUTH_TOKEN`. `ANTHROPIC_API_KEY` must be
+**unset** in Nomad's service environment, or the CLI bills per-token instead of
+against the subscription.
+
+**`--bare` must never be used.** Its documented behaviour is that Anthropic auth
+is strictly `ANTHROPIC_API_KEY` or `apiKeyHelper` — *"OAuth and keychain are
+never read"*. It would silently defeat the entire reason for this decision.
+For launch latency use `--strict-mcp-config` and an explicit
+`--setting-sources` instead.
+
+Session identity is an explicit UUID Nomad generates and persists, passed as
+`--session-id` and resumed with `--resume <uuid>`. **Not `--continue`**, which
+resolves to "most recent conversation in this directory" — ambient state a
+long-lived daemon must not depend on.
+
+Output is `--output-format stream-json`, so Nomad receives tool calls, results
+and token usage as structured events rather than a final string. The display and
+the approval flow both need those events.
+
+*Verified against Claude Code 2.1.224.* Flags are a compatibility surface: pin
+the CLI version in config, check it at boot, and log loudly on mismatch.
+
+*Cost to change:* Low, but it is an external contract — treat CLI upgrades as
+something to test, not assume.
+
+---
+
+## D21 — Nomad's broker gates every Claude Code tool call
+
+**Accepted. Amends D15.**
+
+Claude Code runs with its **full** built-in toolset and is not confined to the
+workspace by `--add-dir`. Every call is routed through `can_use_tool` into
+Nomad's `PermissionBroker`, which applies D14 and can escalate to the
+touchscreen.
+
+The consequence, stated plainly: **the workspace root stops being a hard wall and
+becomes a policy line.** The broker is now the only thing between the model and
+the device, so `never_auto` carries weight it did not carry before. It denies,
+in every mode including `auto`:
+
+- any HID output (D12) — the keystroke-injection path
+- any action on an SSH target
+- anything classified `DESTRUCTIVE`
+- **writes to Nomad's own running source tree** — these must go through the
+  self-update path in D22, never edit the live tree in place
+
+A `can_use_tool` handler that errors, times out, or cannot classify **denies**.
+Fail closed, always.
+
+*Why:* Constraining the toolset would produce constant missing-capability
+friction and would drift every time Claude Code adds a tool. Gating at the call
+site scales and keeps one enforcement point.
+
+*Cost to change:* Low mechanically, high in consequence — this is the decision to
+revisit first if the device ever misbehaves.
+
+---
+
+## D22 — Self-modification is fail-safe by construction
+
+**Accepted. Provisional — implement only after D19 is stable.**
+
+Nomad may add capabilities to itself, but **never by editing its running tree.**
+
+1. Clone/worktree the repo to a scratch path. Edit only there.
+2. Run the full test suite in the scratch tree. A red suite ends the attempt.
+3. Only on green, fast-forward `main` and request a restart.
+4. systemd `Restart=on-failure` plus a boot counter. If the new SHA fails to
+   report healthy N times, automatically `git reset --hard` to the
+   last-known-good SHA recorded in SQLite, and restart.
+5. Every promotion and rollback is an audited event.
+
+*Why:* "Add a capability to yourself" is only safe if a bad edit cannot make the
+device unbootable. The test suite is therefore load-bearing infrastructure, not
+ceremony — it is the gate that makes self-modification survivable.
+
+*Cost to change:* Low now, high once it has written its first change.
+
+---
+
+## D23 — One setup script is the whole install
+
+**Accepted.** The delivery target: create a GitHub repo, push, clone on the Pi,
+run `scripts/setup.sh`, paste an OAuth token. Nothing else.
+
+The script must be idempotent and must: check the Pi's architecture and Python
+version, create the venv, install Nomad and the Agent SDK, install the Claude
+CLI if absent, initialise the database, workspace and config, install and enable
+the systemd unit, and verify the install by starting the service and hitting
+`/health`. It fails loudly with a specific remedy rather than half-installing.
+
+*Cost to change:* Low.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

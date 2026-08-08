@@ -10,12 +10,19 @@ recollection, and never re-dispatch a chunk marked DONE.
 | A | Foundation: pyproject, gitignore, CLAUDE.md, DECISIONS.md, nomad.toml, ledger | root files, `docs/DECISIONS.md` | files exist | **DONE** |
 | B | Remaining docs written against DECISIONS.md | `docs/ARCHITECTURE.md`, `docs/HARDWARE.md`, `docs/PROTOCOL.md`, `docs/ROADMAP.md` | files exist, no contradiction with D1–D18 | **DONE** |
 | C | Core: errors, logging, config, events, lifecycle, storage | `src/nomad/core/**`, `src/nomad/storage/**`, `tests/test_events.py`, `tests/test_config.py`, `tests/test_storage.py`, `tests/test_lifecycle.py` | `pytest tests/test_events.py tests/test_config.py tests/test_storage.py tests/test_lifecycle.py` | **DONE** |
-| D | Security layer: targets, tools, permissions, agent session | `src/nomad/targets/**`, `src/nomad/tools/**`, `src/nomad/agent/**`, `tests/test_tools.py`, `tests/test_permissions.py`, `tests/test_targets.py`, `tests/test_agent_loop.py` | `pytest tests/test_tools.py tests/test_permissions.py tests/test_targets.py tests/test_agent_loop.py` | TODO |
-| E | Peripherals: protocol, transports, hardware, input | `src/nomad/protocol/**`, `src/nomad/hardware/**`, `src/nomad/input/**`, `tests/test_protocol.py`, `tests/test_hardware.py`, `tests/test_input.py` | `pytest tests/test_protocol.py tests/test_hardware.py tests/test_input.py` | TODO |
-| F | Wire-up: assistant providers, API, `__main__`, README, layering test | `src/nomad/assistant/**`, `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_assistant_flow.py`, `tests/test_layering.py` | full `pytest` | TODO |
+| D | Security layer: targets, tools, permissions, agent session | `src/nomad/targets/**`, `src/nomad/tools/**`, `src/nomad/agent/**`, `tests/test_tools.py`, `tests/test_permissions.py`, `tests/test_targets.py`, `tests/test_agent_loop.py` | `pytest tests/{test_targets,test_tools,test_permissions,test_agent_loop,test_workspace}.py` | **DONE** |
+| G | **PIVOT (D19–D21):** Claude Code SDK becomes the loop; broker becomes `can_use_tool`; hardware exposed as MCP | `src/nomad/agent/**` (rewrite), `src/nomad/tools/builtin/**` (retire fs tools), `src/nomad/mcp/**`, `tests/test_claude_client.py`, `tests/test_permission_bridge.py`, `tests/test_mcp_hardware.py` | `pytest tests/{test_claude_client,test_permission_bridge,test_mcp_hardware,test_permissions}.py` | TODO |
+| E | Peripherals: protocol, transports, hardware, input | `src/nomad/protocol/**`, `src/nomad/hardware/**`, `src/nomad/input/**`, `tests/test_protocol.py`, `tests/test_hardware.py`, `tests/test_input.py` | `pytest tests/{test_protocol,test_hardware,test_input}.py` | TODO |
+| F | Wire-up: API, `__main__`, composition root, layering test, README | `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
+| H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
 
-Ordering: A → (B ‖ C) → (D ‖ E) → F. B and C own disjoint paths, as do D and E.
-D and E both require C.
+Ordering: A → B → C → D → **G** → E → F → H. Sequential only — this laptop cannot
+afford concurrent subagents (2 CPUs, ~1.8 GB free).
+
+**Chunk G supersedes part of D.** `agent/loop.py` and `agent/context.py` are
+retired by D19; the permission pipeline, targets and `core` all carry over intact.
+Do not treat the retirement as lost work — the expensive half of D was the broker,
+and it survives with more weight than before (D21).
 
 ## Notes
 
@@ -45,3 +52,34 @@ Verified by the coordinating session, not self-reported: `pytest tests/test_even
 tests/test_config.py tests/test_storage.py tests/test_lifecycle.py` → **30 passed
 in 5.60s**; `ruff check src tests` → clean. (The subagent's own report was
 truncated before it stated a result, so the run was repeated here.)
+
+**D — DONE.** Targets with `LocalTarget` real and SSH/HID raising
+`NotImplementedError`; capability checks reject a file tool aimed at HID before
+permission logic runs; workspace boundary defeats `..`, absolute paths and symlink
+escape; four-stage pipeline where `ToolExecutor.run(grant, request)` recomputes
+scope from the request so an approved workspace write cannot be replayed against
+`/etc`; `never_auto` enforced both before mode branching and again in
+`mint_grant()`. Verified by this session: full suite **183 passed in 33.09s**,
+ruff clean.
+
+Open items raised by chunk D, still unresolved:
+- `ARCHITECTURE.md` disagrees with the built shapes (shows `Tool.run(grant, target,
+  params)` and puts the broker in `agent/`). **Doc needs correcting in chunk F.**
+- Config gaps handled with constructor defaults rather than TOML edits:
+  `agent.context_window`, `agent.authorization_timeout_seconds`,
+  `agent.grant_ttl_seconds`. Several are mooted by D19 (Claude Code owns the
+  context window now).
+- `Workspace.resolve` is check-then-open, so TOCTOU-racy if an untrusted process
+  ever gains write access inside the workspace. Documented in-module.
+- Judgement call to review: switching mode *to* `manual` revokes standing session
+  grants by default. D14 does not specify this.
+
+**PIVOT — after chunk D, before chunk E.** User direction changed the target:
+Nomad should run on the Max-plan subscription rather than per-token API billing,
+should match Claude Code's coding competence, and should eventually modify itself.
+All three resolve to running Claude Code headless as the loop. Recorded as D19–D23.
+Verified against CLI 2.1.224 before designing: `--bare` would have broken this
+outright (it never reads OAuth), `setup-token` and `CLAUDE_CODE_OAUTH_TOKEN` are
+real, `claude-agent-sdk` 0.2.132 is on PyPI. User chose full Claude Code tools
+gated by Nomad's broker (not `--add-dir` confinement), and to pivot immediately
+rather than finish E/F against the old shape.
