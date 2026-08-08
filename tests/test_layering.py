@@ -30,7 +30,7 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 EVERYTHING = {
     "core", "protocol", "storage", "targets", "hardware", "input",
     "memory", "tools", "mcp", "agent", "view", "audio", "resources",
-    "notifications", "utilities",
+    "notifications", "utilities", "skills",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -64,10 +64,14 @@ ALLOWED: dict[str, set[str]] = {
     # Timers and alarms are notifications, which is the whole reason chunk N
     # landed first. Nothing else: these must answer with the radio off.
     "utilities": {"core", "storage", "notifications"},
+    # D39: a skill is instructions, never authority. It reads no store and
+    # reaches nothing — `core` is genuinely all it needs, and anything wider
+    # would be a skill acquiring a capability.
+    "skills": {"core"},
     "tools": {"core", "storage", "targets"},
     "mcp": {
         "core", "storage", "targets", "tools", "memory", "audio",
-        "notifications", "utilities",
+        "notifications", "utilities", "skills",
     },
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary

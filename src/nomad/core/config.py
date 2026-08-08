@@ -213,6 +213,20 @@ class AppsConfig(BaseModel):
     restart_on_crash: bool = False
 
 
+class SkillsConfig(BaseModel):
+    """Progressive disclosure for knowledge (D39).
+
+    `index_budget_chars` is the load-bearing number. The index is injected on
+    every turn, so it is the one part of the skill system whose cost scales
+    with the size of the library rather than with use — which is exactly the
+    tax D33 removed from memory and this must not reintroduce.
+    """
+
+    enabled: bool = True
+    root: str = "var/skills"
+    index_budget_chars: int = 800
+
+
 class SettingsConfig(BaseModel):
     """Self-configuration (D26)."""
 
@@ -368,6 +382,7 @@ class NomadConfig(BaseModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
     settings: SettingsConfig = Field(default_factory=SettingsConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     view: ViewConfig = Field(default_factory=ViewConfig)

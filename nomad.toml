@@ -168,6 +168,14 @@ synthesizer_driver = "mock"    # mock | piper
 # forever - enforced by the driver, not by the operator releasing it. (D37)
 max_record_seconds = 30.0
 
+[skills]
+# Progressive disclosure (D39). A name and one line stay in context; the body
+# loads on request. The budget is what stops a growing library taxing every
+# turn - truncation is announced, never silent.
+enabled = true
+root = "var/skills"
+index_budget_chars = 800
+
 [resources]
 # Background work yields the machine while a turn is live; the interface never
 # yields to anything. (D38)

@@ -102,7 +102,7 @@ them. More files meant more places for the contract to drift.
 | R | **Resource governance (D38):** two tiers as two *types*; heavy local compute yields to a live turn, the interface is structurally non-preemptible | `src/nomad/resources/**`, `tests/test_resources.py` | `pytest tests/test_resources.py` | **DONE** (D38) |
 | N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | **DONE** |
 | U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit conversion — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities_core.py` | `pytest tests/test_utilities_core.py` | **DONE** |
-| S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | TODO |
+| S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | **DONE** (D39) |
 | O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
 | P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
@@ -302,6 +302,32 @@ this project:
   is now drifting — it builds hardware, memory *and* utility tools. Rename it
   when something else touches that file; not worth the churn alone.
 - One `ruff` import-order error.
+
+**S — DONE.** `SkillCard` and `Skill` are two types rather than one type with
+an `include_body` flag, so the index-rendering path holds nothing that *has* a
+body to leak. A one-line description is validated, not merely requested — a
+multi-line description is a body injected on every turn forever, which is the
+exact cost D33 already removed from memory once. Index truncation is announced
+rather than silent: a device that has quietly forgotten how to do things looks
+broken for no reason the operator can see.
+
+The load-bearing property is enforced structurally: an ast scan asserts that
+nothing under `tools/` and not `agent/permission_bridge.py` imports
+`nomad.skills`, so a skill body can never become an input to an authorization
+decision. Verified by adding that import and watching the test fail. There is
+also deliberately no `install_skill` tool — a model that can both write a skill
+and load it writes its own instructions and then follows them, so authoring
+stays an operator-approved act (D26), the same shape as D36's prompt and D37's
+missing `listen`.
+
+Verified: `tests/test_skills.py` **20 passed**, full suite **654 passed**, ruff
+clean.
+
+**Not wired, and needed before skills do anything in anger:** nothing injects
+`render_index()` into the prompt yet (that belongs with `agent/identity.py` in
+F3), and no starter skills ship — `var/` is gitignored, so seed skills need a
+committed source directory the setup script copies from. Both are wiring, not
+design.
 
 ## Notes
 
