@@ -25,11 +25,24 @@ PiSugar get soldered on in a later session, once the software is ready. Nothing
 in the suite needs a serial port, a credential or a pin. `HeadlessDisplay`
 exists so the parts that draw can still be watched while that is true.
 
-**Next action:** chunk N (presence), then V, O, P. One thing a brief for N must
-carry, because it is not inferable: notifications must be durable rows, since
-`EventBus` drops slow subscribers by design (D6) and the screen is off most of
-the time. M closed the other one — rollover carries distilled memory forward
-(D34), because the Claude Code transcript is *not* storage Nomad controls.
+**Next action:** chunk V (voice), then R, N, U, S, O — see the ordering note
+under the chunk table for why that order and not another. One thing a brief for
+N must carry, because it is not inferable: notifications must be durable rows,
+since `EventBus` drops slow subscribers by design (D6) and the screen is off
+most of the time. M closed the other one — rollover carries distilled memory
+forward (D34), because the Claude Code transcript is *not* storage Nomad
+controls.
+
+**Hardware as of 2026-08-08, from the operator:** the Pi is powered down while
+fans are fitted — it ran hot. The ESP32-S3 touchscreen module is connected by
+USB-C, powered, and **showing its factory demo**, which means stock firmware,
+not firmware speaking D30's wire format. So the panel is present but not yet
+addressable: real touch input needs a firmware flash, and that flash needs the
+Pi back up. Nothing in V–O depends on either, because the whole stack is built
+against mock drivers by design (D9). Record the module's exact part number in
+`ARCHITECTURE.md` before writing firmware — resolution, touch controller and
+USB-serial bridge all follow from it, and guessing any of the three wastes a
+flash cycle.
 
 **Chunk O — the offline tier — is the operator's call, recorded here so the
 constraints are not relearned.** The device is a brick without network today,
@@ -83,20 +96,42 @@ them. More files meant more places for the contract to drift.
 | E2 | Hardware drivers: headless + ESP32 display, PiSugar battery, driver selection; display vocabulary (`display_card`/`display_list`/`display_choice`), `get_context` | `src/nomad/hardware/**`, `src/nomad/mcp/hardware.py`, `tests/test_hardware.py` | `pytest tests/{test_hardware,test_mcp_hardware}.py` | **DONE** |
 | E3 | Input: logical action layer, deadzone + hysteresis, repeat vs edge-trigger on one stream, extensible action set (D13, D26) | `src/nomad/input/**`, `tests/test_input.py` | `pytest tests/test_input.py` | **DONE** |
 | M | **Memory Nomad owns:** durable owner memory + `remember`/`recall`/`forget` MCP tools; session rollover carries it forward | `src/nomad/memory/**`, migration, `tests/test_memory.py` | `pytest tests/test_memory.py` | **DONE** (D33, D34) |
+| F1 | Composition root wired; the screen is never blank | `src/nomad/app.py`, `src/nomad/view/renderer.py`, `src/nomad/view/server.py` | `pytest tests/{test_app,test_view}.py` | **DONE** |
+| F2 | **One screen, one writer (D36):** `ScreenOwner`/`ScreenView` arbitration; `AuthorizationPrompter` that is deliberately not a tool | `src/nomad/view/screen.py`, `src/nomad/view/authprompt.py`, `tests/test_authprompt.py` | `pytest tests/{test_authprompt,test_view,test_app}.py` | **DONE** |
+| V | **Voice:** `Recorder`/`Speaker`/`Transcriber`/`Synthesizer` protocols with mock defaults, `push_to_talk` action, a `speak` tool, audio on the Pi — never the ESP32 link | `src/nomad/audio/**`, `src/nomad/mcp/voice.py`, `tests/test_audio.py` | `pytest tests/test_audio.py` | TODO |
+| R | **Resource governance (D39):** a `Workload` registry with priority tiers; heavy local compute yields to an online Claude turn, the UI and tool endpoints are never preemptible | `src/nomad/resources/**`, `tests/test_resources.py` | `pytest tests/test_resources.py` | TODO |
 | N | **Presence:** durable notification queue (never the lossy `EventBus`), ambient-context tool (time, battery, charging, network, motion) | `src/nomad/notifications/**`, `src/nomad/mcp/context.py`, matching tests | `pytest tests/{test_notifications,test_context}.py` | TODO |
-| V | **Voice:** `Recorder`/`Speaker`/`Transcriber` protocols with mock defaults, `push_to_talk` action, audio on the Pi — never the ESP32 link | `src/nomad/audio/**`, `tests/test_audio.py` | `pytest tests/test_audio.py` | TODO |
-| P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
+| U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit/currency conversion, system status — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities.py` | `pytest tests/test_utilities.py` | TODO |
+| S | **Skills (D38):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | TODO |
 | O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path promoting repeated asks into real onboard tools | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | TODO |
+| P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
-| F | Wire-up: API, `__main__`, composition root, layering test, README | `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
+| F3 | Remaining wire-up: HTTP API, README, full layering sweep | `src/nomad/api/**`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
 
-Ordering: A → B → C → D → G → G2 → **E** → M → N → V → P → I → F → H.
+Ordering: A → B → C → D → G → G2 → **E** → M → F1 → F2 → **V → R → N → U → S → O**
+→ P → I → F3 → H.
 **Sequential only** — this laptop cannot afford concurrent subagents. I needs E,
 because apps draw to the display and consume logical input. M, N, V and P were
 added after the adversarial review below and are not optional polish: without
 them the finished device is a Claude Code terminal in a Game Boy shell, and the
 shell makes it worse than the laptop.
+
+**V → R → N → U → S → O is the operator's goal of 2026-08-08**, and the order is
+dependency, not preference:
+
+- **V first** because a keyboardless device with no voice has no input method.
+  Every chunk after it is downstream of the operator being able to speak.
+- **R second** because V introduces the first genuinely heavy local workload
+  (speech-to-text), and the resource contract has to exist before there are four
+  workloads competing rather than one. Retrofitting a governor is how you get a
+  governor with exceptions.
+- **N → U** because a timer that cannot survive the screen being off is not a
+  timer; U's utilities are the first real consumers of N's durable queue.
+- **S before O** because O promotes repeated asks into onboard capability, and
+  a skill is the cheapest shape for the thing it promotes *into*.
+- **O last of the six** — it is the hardest chunk and it wants every other
+  surface already present to route into.
 
 ## The adversarial review (2026-08-08)
 

@@ -961,6 +961,68 @@ model-supplied data:
 
 ---
 
+## D37 — Audio bypasses the control link; only the operator opens the microphone
+
+Two questions arrive together the moment the device gains a voice, and they
+have different answers.
+
+**Where audio flows.** The transducers are on the ESP32-S3 module — operator,
+2026-08-08 — so audio is *physically* on the far side of the USB-C cable. It
+still must not travel over the **CDC control link**. 16 kHz 16-bit mono is
+256 kbps before framing, against 921600 baud already carrying framebuffer
+deltas and the input stream. Sharing it would make the screen stutter exactly
+when the operator speaks, and those are the two things that must both work
+during a prompt.
+
+So the ESP32-S3 firmware presents a **composite USB device**: CDC for D30's
+control protocol, and a separate **USB Audio Class** interface for sound. The
+Pi then sees an ordinary sound card, and audio bytes and control frames cannot
+starve each other because they are different endpoints. `protocol` never gains
+an audio message type.
+
+Enforced mechanically rather than by memory: the `audio` package's entry in
+`tests/test_layering.py` **may not import `protocol`**. Audio has no route to
+Nomad's wire codec, so a contributor who tries to open one fails a test rather
+than shipping a stutter.
+
+**Where audio is computed.** On the Pi, always. The ESP32-S3 is a transducer
+and a codec, not a DSP — the same reasoning as D17, one tier down. It captures
+and plays; speech-to-text and text-to-speech are Pi workloads, and therefore
+governed workloads (D39).
+
+*Unverified, and it must be verified before firmware:* that this specific
+module (Hosyond ESP32-S3, UPC 712490971738) has a usable mic and amplifier,
+and that TinyUSB's UAC support co-exists with CDC on it. If composite UAC
+proves impractical, the fallback is a second CDC interface for audio, never
+sharing the first. **None of this reaches the software written now** — chunk V
+codes against `Recorder`/`Speaker` protocols with mock defaults, so the real
+driver is a leaf that opens a sound device, whichever way that device arrives.
+
+**Who may open the microphone.** The model may speak. D35 already settled the
+shape of that argument for the screen — Nomad's own output surface is not the
+world — and a speaker is the same kind of surface, so `speak` is an ordinary
+auto-running tool at `LOW` risk.
+
+**A microphone is not.** There is deliberately **no `listen` tool, and no
+model-reachable path to one.** Recording begins when the operator holds
+`push_to_talk` and ends when they release it. The reasoning is D36's, applied
+to a different organ: a device that can be made to listen by the thing running
+on it looks *identical*, from across the room, whether or not it is listening.
+The screen is not evidence, because the model can draw. The only trustworthy
+answer is that the capability does not exist to be reached — not a permission
+on it, which is a thing that can be granted, but no tool at all.
+
+Transcribed operator speech therefore enters as a **turn input**, on the same
+path a typed message would take, and never as a tool result. A wake word, if
+one ever ships, is a local always-on matcher that arms the same operator-held
+path — never a tool, and never a transcript the model receives unprompted.
+
+*Cost to change:* Low today. High after any audio message type reaches the
+wire format or any model-callable capture tool exists — both are contracts
+that get depended on quietly.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

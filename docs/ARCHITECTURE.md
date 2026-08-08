@@ -364,12 +364,27 @@ Roles and honest limits. **No part of this is required to develop or test**
 | Component | Role | Link to the Pi | Explicitly not |
 |---|---|---|---|
 | **Raspberry Pi 4 (4 GB)** | The brain. Linux, `AgentSession`, event bus, storage, all decisions. | — it *is* the host | Rendering pixels or injecting keystrokes itself |
-| **ESP32-S3** + touchscreen, joystick, 4 buttons | Display and input peripheral | USB CDC serial, 921600 baud | **A co-processor.** No application logic runs on it. Its microSD is not primary storage |
+| **ESP32-S3** + touchscreen, joystick, 4 buttons, **mic and speaker** | Display, input and audio peripheral | USB CDC serial, 921600 baud (control) **+ a separate USB Audio Class interface** (sound, D37) | **A co-processor.** No application logic runs on it, and no speech is recognised or synthesised on it. Its microSD is not primary storage |
 | **RP2040-Zero** | USB HID keyboard/mouse into an external host | USB CDC serial, 115200 baud (control); USB HID (output) | Bidirectional. Output-only from the Pi's view |
 | **PiSugar S Plus** | Battery power and telemetry | I2C | A decision-maker. It reports numbers; D18 policy decides |
 
 The Pi's own storage is the only durable store that matters: SQLite (D7),
 workspace root (D15), config, logs.
+
+**Parts actually in hand, as of 2026-08-08.** Only the display module exists
+physically; everything else in the table above is still a mock driver, which is
+the plan (D9) and not a gap.
+
+| Part | Status |
+|---|---|
+| Hosyond ESP32-S3 touchscreen module, UPC 712490971738 | Connected by USB-C, powered, **running its factory demo** — i.e. stock firmware, not D30's wire format. Not yet addressable by Nomad |
+| Raspberry Pi 4 | Powered down while fans are fitted; it ran hot |
+| RP2040-Zero, PiSugar S Plus | Not yet acquired/wired |
+
+Before any firmware is written, confirm against the module itself rather than
+this table: panel resolution, touch controller IC, USB-serial bridge, and
+whether its mic and amplifier can be exposed as USB Audio Class alongside CDC
+(D37). Guessing any of them wastes a flash cycle.
 
 > **WARNING — the RP2040 is a keystroke-injection device by construction.**
 > Typing into another computer is not a side effect to be careful about; it
