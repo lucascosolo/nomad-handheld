@@ -24,8 +24,9 @@ normal, not an error.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from nomad.core.logging import get_logger
@@ -91,6 +92,160 @@ class NullChoicePrompter:
         if self._show is not None:
             await self._show(question, options, 0)
         return ChoiceResult(outcome=ChoiceOutcome.NO_OPERATOR)
+
+
+@dataclass(frozen=True)
+class PendingQuestion:
+    """One unanswered question, as an *immutable* snapshot.
+
+    Frozen and rebound as a whole rather than mutated in place, because the
+    reader is on another thread: `ScreenServer` serves the browser from
+    `http.server`'s pool while the prompter lives on the event loop. A reader
+    therefore sees the previous question or the next one, never half of one —
+    the same trick `HeadlessDisplay` uses for the screen itself.
+    """
+
+    #: Unguessable, and regenerated per question. An answer names the question
+    #: it was given, so a click on a stale page cannot resolve the prompt that
+    #: replaced it — which for an authorization prompt is the difference
+    #: between approving what you read and approving what arrived while you
+    #: were reading. It is *not* a session token and is not a substitute for
+    #: authentication: it scopes an answer, it does not identify an operator.
+    token: str
+    question: str
+    options: tuple[str, ...]
+
+    @classmethod
+    def create(cls, question: str, options: list[str]) -> PendingQuestion:
+        return cls(token=secrets.token_urlsafe(16), question=question, options=tuple(options))
+
+
+@dataclass
+class _Waiter:
+    question: PendingQuestion
+    future: asyncio.Future[ChoiceResult] = field(default_factory=asyncio.Future)
+
+
+class ExternalChoicePrompter:
+    """Answered from somewhere that is not the input stream — today, a browser.
+
+    **Why this exists rather than a second feeder into `InputStream`.** The
+    obvious alternative was to have the browser post `NAV_UP`/`CONFIRM` and
+    push them through `InputStream.feed_button`, reusing `InputChoicePrompter`
+    wholesale. It was rejected for two reasons and neither is style:
+
+    * The highlight would live in `InputChoicePrompter`'s generator and the
+      browser would only learn of it by re-reading the drawn screen, so an
+      answer would be three round trips against a screen refreshing on a
+      timer — and the operator would be confirming whatever the highlight
+      happened to be, not the option they clicked. Here the answer names an
+      option *and* the question it belongs to (`token`), so a click cannot
+      resolve something the operator never read.
+    * `InputStream.events()` is single-consumer by contract (`app.py`). Feeding
+      it from HTTP keeps that literally true but makes it useless in practice:
+      once the panel exists, a browser press and a joystick press become
+      indistinguishable and two operators drive one highlight. This class
+      touches the stream not at all, so the invariant holds by construction —
+      in a headless build nothing reads `InputStream` at all, exactly as
+      before.
+
+    Like `NullChoicePrompter` it still *draws* the question, because the screen
+    is what a browser is watching. Unlike it, an unanswered question is
+    `TIMED_OUT` and not `NO_OPERATOR`: a browser view is an attached input
+    device, so retrying can help, and D32's distinction is precisely that
+    `NO_OPERATOR` means it never can.
+
+    One question at a time. `AuthorizationPrompter` already holds the screen
+    exclusively for the whole exchange (D36), so a second concurrent `ask` is a
+    bug elsewhere; it is refused here rather than silently replacing a prompt
+    the operator is mid-way through reading.
+    """
+
+    def __init__(
+        self,
+        *,
+        show: ShowChoice | None = None,
+        default_timeout_s: float = DEFAULT_CHOICE_TIMEOUT_S,
+    ) -> None:
+        self._show = show
+        self._default_timeout_s = default_timeout_s
+        self._waiter: _Waiter | None = None
+        #: Read cross-thread. Written only on the loop, always as a whole.
+        self._pending: PendingQuestion | None = None
+
+    @property
+    def pending(self) -> PendingQuestion | None:
+        """The unanswered question, safe to read from any thread."""
+        return self._pending
+
+    async def ask(
+        self, question: str, options: list[str], *, timeout_s: float | None = None
+    ) -> ChoiceResult:
+        if not options:
+            return ChoiceResult(outcome=ChoiceOutcome.NO_OPERATOR)
+        if self._waiter is not None:
+            logger.warning(
+                "A choice is already pending; refusing to ask a second",
+                extra={"question": question},
+            )
+            return ChoiceResult(outcome=ChoiceOutcome.NO_OPERATOR)
+
+        waiter = _Waiter(question=PendingQuestion.create(question, options))
+        self._waiter = waiter
+        self._pending = waiter.question
+        try:
+            if self._show is not None:
+                await self._show(question, options, 0)
+            timeout = self._default_timeout_s if timeout_s is None else timeout_s
+            try:
+                return await asyncio.wait_for(asyncio.shield(waiter.future), timeout=timeout)
+            except TimeoutError:
+                logger.info("Choice prompt expired", extra={"question": question})
+                return ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT)
+        finally:
+            self._waiter = None
+            self._pending = None
+
+    async def answer(self, token: str, index: int) -> bool:
+        """Resolve the pending question. `False` if there is nothing to resolve.
+
+        Runs on the event loop — a caller on another thread reaches it through
+        `asyncio.run_coroutine_threadsafe`, which is what keeps the future's
+        completion on the loop that is awaiting it.
+        """
+        return self._resolve(
+            token,
+            lambda question: ChoiceResult(
+                outcome=ChoiceOutcome.ANSWERED,
+                option=question.options[index],
+                index=index,
+            )
+            if 0 <= index < len(question.options)
+            else None,
+        )
+
+    async def cancel(self, token: str) -> bool:
+        """The operator declined without choosing. The BACK button, by another road."""
+        return self._resolve(token, lambda _question: ChoiceResult(outcome=ChoiceOutcome.CANCELLED))
+
+    def _resolve(
+        self, token: str, build: Callable[[PendingQuestion], ChoiceResult | None]
+    ) -> bool:
+        waiter = self._waiter
+        if waiter is None:
+            return False
+        # `compare_digest` raises on non-ASCII text, and the token arrives from
+        # an HTTP body: a rejected answer must never be a 500.
+        if not token.isascii() or not secrets.compare_digest(token, waiter.question.token):
+            # Almost always a stale page. Logged rather than raised: the
+            # question it was answering is gone, so there is nothing to fail.
+            logger.info("Choice answer named a question that is no longer pending")
+            return False
+        result = build(waiter.question)
+        if result is None or waiter.future.done():
+            return False
+        waiter.future.set_result(result)
+        return True
 
 
 class InputChoicePrompter:

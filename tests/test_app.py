@@ -21,7 +21,7 @@ from nomad.core.errors import ConfigError, LifecycleError
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.errors import HardwareError
 from nomad.hardware.headless_display import HeadlessDisplay
-from nomad.input.choice import NullChoicePrompter
+from nomad.input.choice import ExternalChoicePrompter, NullChoicePrompter
 from nomad.storage.migrations import MIGRATIONS, current_version
 from nomad.view.authprompt import AUTH_PROMPT_WRITER
 
@@ -160,10 +160,22 @@ async def test_the_prompt_component_starts_with_the_device(tmp_path: Path) -> No
     assert app.states()["auth_prompt"] is ComponentState.STOPPED
 
 
-async def test_with_no_input_hardware_the_prompter_is_the_honest_one(tmp_path: Path) -> None:
-    """A headless screen means nothing feeds the joystick (D32)."""
-    app = NomadApp(_config(tmp_path))
+async def test_with_no_input_hardware_at_all_the_prompter_is_the_honest_one(
+    tmp_path: Path,
+) -> None:
+    """A headless screen and no browser means nothing can answer (D32)."""
+    app = NomadApp(_config(tmp_path, view={"enabled": False}))
     assert isinstance(app.prompter, NullChoicePrompter)
+
+
+async def test_a_browser_view_is_an_input_device(tmp_path: Path) -> None:
+    """Chunk F3. `NullChoicePrompter` on a headless build was not a stub, it
+    was a permanent denial: `NO_OPERATOR` to every prompt, and `manual` mode
+    ships in `nomad.toml`, so every gated tool call was denied by construction.
+    """
+    app = NomadApp(_config(tmp_path))
+    assert isinstance(app.prompter, ExternalChoicePrompter)
+    assert app.view is not None and app.view.writable
 
 
 async def test_exactly_one_consumer_owns_the_input_stream(tmp_path: Path) -> None:
@@ -185,7 +197,11 @@ async def test_the_screen_is_served_over_loopback(tmp_path: Path) -> None:
         await app.display.show_text("battery 41%", title="Nomad")  # type: ignore[attr-defined]
         body = urllib.request.urlopen(app.view_url, timeout=5).read().decode()
         assert "battery 41%" in body
-        assert 'http-equiv="refresh"' in body
+        # No meta refresh on the interactive page: a whole-page reload every
+        # second would delete whatever the operator was half-way through
+        # typing. It polls `/state` instead.
+        assert 'http-equiv="refresh"' not in body
+        assert "/state" in body
         assert app.view_url is not None
         assert app.view_url.startswith("http://127.0.0.1:")
     finally:
