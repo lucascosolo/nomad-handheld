@@ -91,6 +91,7 @@ class MessageType(StrEnum):
     DISPLAY_DRAW = "display.draw"
     DISPLAY_BLIT = "display.blit"
     DISPLAY_BACKLIGHT = "display.backlight"
+    DISPLAY_STATE = "display.state"
     INPUT_TOUCH = "input.touch"
     INPUT_JOYSTICK = "input.joystick"
     INPUT_BUTTON = "input.button"
@@ -145,6 +146,48 @@ class DisplayDraw(PayloadModel):
     w: int = Field(gt=0)
     h: int = Field(gt=0)
     pixels: Binary
+
+
+class ScreenKind(StrEnum):
+    """Nomad's display vocabulary, on the wire."""
+
+    TEXT = "text"
+    CARD = "card"
+    LIST = "list"
+    CHOICE = "choice"
+
+
+class DisplayState(PayloadModel):
+    """A whole screen, described structurally rather than as pixels.
+
+    The first driver written against this catalogue packed a JSON blob into
+    `DisplayDraw.pixels`, a field documented as raw or RLE image data. That
+    works and it is a lie on the wire: anything reading a capture, and any
+    firmware author, would reasonably treat `pixels` as an image.
+
+    Sending structure instead is also the cheaper design. A card is a few
+    dozen bytes here against 8-11 KB as a rasterised region, on a 921600-baud
+    link shared with input events, and it moves font rendering and layout to
+    the side that owns the panel and its fonts. `display.draw` stays for the
+    cases that really are pixels — an app's framebuffer, an image.
+
+    Fields not relevant to a `kind` are simply empty; splitting this into four
+    message types would multiply the firmware's dispatch table for no gain.
+    """
+
+    message_type: ClassVar[MessageType] = MessageType.DISPLAY_STATE
+
+    kind: ScreenKind
+    title: str = ""
+    body: str = ""
+    #: `card`: label/value pairs.
+    rows: list[tuple[str, str]] = Field(default_factory=list)
+    #: `list`: label and optional detail.
+    items: list[tuple[str, str | None]] = Field(default_factory=list)
+    selectable: bool = False
+    #: `choice`: what is being asked, and the answers a joystick can pick.
+    question: str = ""
+    options: list[str] = Field(default_factory=list)
 
 
 class DisplayBlit(PayloadModel):
@@ -241,6 +284,7 @@ class SystemError(PayloadModel):
 
 _DISPLAY_CATALOGUE: dict[str, type[PayloadModel]] = {
     MessageType.DISPLAY_DRAW: DisplayDraw,
+    MessageType.DISPLAY_STATE: DisplayState,
     MessageType.DISPLAY_BLIT: DisplayBlit,
     MessageType.DISPLAY_BACKLIGHT: DisplayBacklight,
     MessageType.INPUT_TOUCH: InputTouch,

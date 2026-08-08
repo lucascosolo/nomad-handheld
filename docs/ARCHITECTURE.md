@@ -479,6 +479,7 @@ megabytes.
 
 | Type | Direction | Payload sketch |
 |---|---|---|
+| `display.state` | Pi → ESP32 | `{kind, title, body, rows, items, selectable, question, options}` — a whole screen, structurally |
 | `display.draw` | Pi → ESP32 | `{x, y, w, h, pixels}` — raw or RLE region |
 | `display.blit` | Pi → ESP32 | `{x, y, region_id}` |
 | `display.backlight` | Pi → ESP32 | `{level: 0-255}` |
@@ -488,6 +489,15 @@ megabytes.
 | `system.hello` | either | `{firmware_version, capabilities}` — on connect |
 | `system.status` | ESP32 → Pi | `{uptime_ms, free_heap, last_seq_seen}` |
 | `system.error` | either | `{code, message}` |
+
+**`display.state` carries Nomad's display vocabulary; `display.draw` carries
+pixels.** The first driver written against this catalogue packed a JSON blob
+into `display.draw`'s `pixels` field — it worked, and it was a lie on the
+wire, since anything reading a capture would treat that field as an image.
+Structure is also the cheaper design: a card is a few dozen bytes against
+8–11 KB rasterised, on a link shared with input events, and layout belongs on
+the side that owns the panel and its fonts. `display.draw` stays for the
+cases that really are pixels — an app's framebuffer, an image.
 
 **Audio is deliberately absent from this link.** An earlier draft carried
 `audio.mic_stream` and `audio.speaker` here. It does not fit: 16 kHz 16-bit

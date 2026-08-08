@@ -24,8 +24,12 @@ from typing import Any
 from nomad.core.logging import get_logger
 from nomad.mcp.hardware import (
     BatteryDriver,
+    DisplayCardTool,
+    DisplayChoiceTool,
     DisplayDriver,
+    DisplayListTool,
     DisplayTextTool,
+    GetContextTool,
     HidDriver,
     HidTypeTextTool,
     MockBattery,
@@ -56,10 +60,16 @@ def build_hardware_tools(
 
     Mocks by default, and the default is what the suite runs against (D9).
     """
+    display = display or MockDisplay()
+    battery = battery or MockBattery()
     return [
         GetSystemInfoTool(),
-        DisplayTextTool(display or MockDisplay()),
-        ReadBatteryTool(battery or MockBattery()),
+        DisplayTextTool(display),
+        DisplayCardTool(display),
+        DisplayListTool(display),
+        DisplayChoiceTool(display),
+        ReadBatteryTool(battery),
+        GetContextTool(battery),
         HidTypeTextTool(hid or MockHid()),
     ]
 

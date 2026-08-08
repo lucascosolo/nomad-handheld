@@ -7,12 +7,14 @@ router without a grant is not executed, no matter how it got there.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
 
 from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.events import EventBus
+from nomad.core.logging import get_logger
 from nomad.mcp.hardware import (
     BatteryStatus,
     MockBattery,
@@ -29,6 +31,7 @@ from nomad.storage.db import Database
 from nomad.storage.repositories.conversations import ConversationsRepository
 from nomad.storage.repositories.grants import GrantsRepository
 from nomad.targets import HidTarget, LocalTarget, TargetRegistry
+from nomad.tools.base import ToolContext
 from nomad.tools.permissions import (
     AuthorizationGrant,
     GrantSource,
@@ -99,20 +102,29 @@ async def _authorize(rig, tool: str, params: dict, target: str = "local") -> Non
 
 def test_the_toolset_is_what_claude_code_cannot_bring() -> None:
     names = {tool.spec.name for tool in build_hardware_tools()}
-    assert names == {"get_system_info", "display_text", "read_battery", "hid_type_text"}
+    assert names == {
+        "get_system_info",
+        "display_text",
+        "display_card",
+        "display_list",
+        "display_choice",
+        "read_battery",
+        "get_context",
+        "hid_type_text",
+    }
 
 
 def test_the_toolset_defaults_to_mocks() -> None:
     """Mock is the default everywhere, so the suite runs with no hardware (D9)."""
     tools = build_hardware_tools()
-    assert len(tools) == 4
+    assert len(tools) == 8
 
 
 def test_registering_hardware_twice_is_harmless() -> None:
     registry = ToolRegistry()
     register_hardware_tools(registry, build_hardware_tools())
     register_hardware_tools(registry, build_hardware_tools())
-    assert len(registry.names()) == 4
+    assert len(registry.names()) == 8
 
 
 def test_the_server_name_matches_what_the_bridge_strips() -> None:
@@ -162,6 +174,105 @@ async def test_display_text_reaches_the_driver(rig) -> None:
     result = await rig["router"].call("display_text", {"text": "hello", "title": "Nomad"})
     assert result["isError"] is False
     assert rig["display"].shown == [("hello", "Nomad")]
+
+
+async def test_display_card_reaches_the_driver(rig) -> None:
+    params = {"title": "Weather", "body": "Clear skies", "rows": [{"key": "Temp", "value": "72F"}]}
+    await _authorize(rig, "display_card", params)
+    result = await rig["router"].call("display_card", params)
+    assert result["isError"] is False
+    assert rig["display"].cards == [("Weather", "Clear skies", [("Temp", "72F")])]
+
+
+async def test_display_list_reaches_the_driver(rig) -> None:
+    params = {
+        "title": "Apps",
+        "items": [{"label": "Notes"}, {"label": "Chess", "detail": "vs bot"}],
+        "selectable": True,
+    }
+    await _authorize(rig, "display_list", params)
+    result = await rig["router"].call("display_list", params)
+    assert result["isError"] is False
+    assert rig["display"].lists == [
+        ("Apps", [("Notes", None), ("Chess", "vs bot")], True)
+    ]
+
+
+async def test_display_choice_reaches_the_driver(rig) -> None:
+    params = {"question": "Continue?", "options": ["Yes", "No"]}
+    await _authorize(rig, "display_choice", params)
+    result = await rig["router"].call("display_choice", params)
+    assert result["isError"] is False
+    assert rig["display"].choices == [("Continue?", ["Yes", "No"])]
+
+
+async def test_get_context_reports_time_battery_network_and_uptime(rig) -> None:
+    """Direct tool call: `network_check`/`clock`/`started_at` are injectable
+    precisely so this never depends on real network access or wall time."""
+    from datetime import datetime
+
+    from nomad.mcp.hardware import GetContextParams, GetContextTool
+
+    rig["battery"].status = BatteryStatus(percent=55.0, charging=False, voltage=3.8)
+
+    async def reachable() -> bool:
+        return True
+
+    tool = GetContextTool(
+        rig["battery"],
+        network_check=reachable,
+        clock=lambda: datetime(2026, 8, 8, 12, 30, tzinfo=UTC),
+        started_at=0.0,
+    )
+    target = rig["broker"]._targets.get("local")
+    ctx = ToolContext(
+        target=target,
+        workspace=rig["broker"]._workspace,
+        session_id=SESSION_ID,
+        turn_id=None,
+        logger=get_logger("test"),
+    )
+    result = await tool.execute(GetContextParams(), ctx)
+    assert result.ok
+    assert "55%" in result.content
+    assert "network reachable" in result.content
+    assert result.metadata["network_reachable"] is True
+    assert result.metadata["battery_percent"] == 55.0
+
+
+async def test_get_context_survives_an_unreachable_network(rig) -> None:
+    from nomad.mcp.hardware import GetContextParams, GetContextTool
+
+    async def unreachable() -> bool:
+        return False
+
+    tool = GetContextTool(rig["battery"], network_check=unreachable, started_at=0.0)
+    target = rig["broker"]._targets.get("local")
+    ctx = ToolContext(
+        target=target,
+        workspace=rig["broker"]._workspace,
+        session_id=SESSION_ID,
+        turn_id=None,
+        logger=get_logger("test"),
+    )
+    result = await tool.execute(GetContextParams(), ctx)
+    assert result.ok
+    assert "network unreachable" in result.content
+    assert result.metadata["network_reachable"] is False
+
+
+def test_every_displaydriver_implementation_satisfies_the_widened_protocol() -> None:
+    """A mock that takes a different branch than production is worse than no
+    mock — every implementation must carry the whole vocabulary."""
+    from nomad.hardware import Esp32Display, HeadlessDisplay
+    from nomad.mcp.hardware import DisplayDriver
+    from nomad.protocol import Link, LinkKind, MockTransport
+
+    assert isinstance(MockDisplay(), DisplayDriver)
+    assert isinstance(HeadlessDisplay(), DisplayDriver)
+
+    link = Link(MockTransport(), kind=LinkKind.DISPLAY)
+    assert isinstance(Esp32Display(link), DisplayDriver)
 
 
 async def test_read_battery_reports_charge(rig) -> None:
