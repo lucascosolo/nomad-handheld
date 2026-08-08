@@ -24,6 +24,7 @@ from typing import Any
 from nomad.core.logging import get_logger
 from nomad.mcp.hardware import (
     BatteryDriver,
+    ChoicePrompter,
     DisplayCardTool,
     DisplayChoiceTool,
     DisplayDriver,
@@ -55,6 +56,7 @@ def build_hardware_tools(
     display: DisplayDriver | None = None,
     battery: BatteryDriver | None = None,
     hid: HidDriver | None = None,
+    prompter: ChoicePrompter | None = None,
 ) -> list[Tool]:
     """The tools Claude Code cannot bring for itself.
 
@@ -67,7 +69,7 @@ def build_hardware_tools(
         DisplayTextTool(display),
         DisplayCardTool(display),
         DisplayListTool(display),
-        DisplayChoiceTool(display),
+        DisplayChoiceTool(display, prompter),
         ReadBatteryTool(battery),
         GetContextTool(battery),
         HidTypeTextTool(hid or MockHid()),

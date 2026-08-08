@@ -72,6 +72,27 @@ class DisplayDriver(Protocol):
 
 
 @runtime_checkable
+class ChoiceResultLike(Protocol):
+    """What a prompter hands back. `describe()` is what the model is told."""
+
+    def describe(self) -> str: ...
+
+
+@runtime_checkable
+class ChoicePrompter(Protocol):
+    """Asks the operator something and waits for the answer (D13).
+
+    Declared here, next to the other driver facades, and implemented in
+    `input/choice.py` — the facade must not import the input layer, exactly as
+    it does not import `hardware`.
+    """
+
+    async def ask(
+        self, question: str, options: list[str], *, timeout_s: float | None = None
+    ) -> ChoiceResultLike: ...
+
+
+@runtime_checkable
 class BatteryDriver(Protocol):
     async def read(self) -> BatteryStatus: ...
 
@@ -251,6 +272,15 @@ class DisplayChoiceParams(BaseModel):
         max_length=4,
         description="2-4 options, answerable with a joystick.",
     )
+    timeout_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=600.0,
+        description=(
+            "How long to wait for an answer before giving up. Omit for the "
+            "default. The operator may not be looking at the screen."
+        ),
+    )
 
 
 class DisplayChoiceTool:
@@ -268,14 +298,25 @@ class DisplayChoiceTool:
         required_capabilities=frozenset(),
     )
 
-    def __init__(self, display: DisplayDriver) -> None:
+    def __init__(self, display: DisplayDriver, prompter: ChoicePrompter | None = None) -> None:
         self._display = display
+        # No prompter means no input hardware is wired up yet. The question is
+        # still drawn — showing it is useful — but the tool reports that it
+        # cannot be answered rather than returning a confirmation the model
+        # would reasonably read as an answer.
+        self._prompter = prompter
 
     async def execute(self, params: DisplayChoiceParams, ctx: ToolContext) -> ToolResult:
-        await self._display.show_choice(params.question, params.options)
-        return ToolResult.success(
-            f"asked '{params.question}' with {len(params.options)} option(s)"
+        if self._prompter is None:
+            await self._display.show_choice(params.question, params.options)
+            return ToolResult.success(
+                f"showed '{params.question}', but no input device is attached, "
+                "so it cannot be answered"
+            )
+        result = await self._prompter.ask(
+            params.question, list(params.options), timeout_s=params.timeout_s
         )
+        return ToolResult.success(result.describe())
 
 
 class BatteryParams(BaseModel):

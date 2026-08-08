@@ -68,6 +68,7 @@ def _spec(
     risk: Risk,
     permissions: frozenset[Permission] = frozenset(),
     path_params: tuple[str, ...] = (),
+    url_params: tuple[str, ...] = (),
     never_auto: bool = False,
 ) -> ToolSpec:
     return ToolSpec(
@@ -87,6 +88,7 @@ def _spec(
         workspace_confined=False,
         never_auto=never_auto,
         path_params=path_params,
+        url_params=url_params,
     )
 
 
@@ -178,9 +180,13 @@ CLAUDE_CODE_TOOLS: tuple[ToolSpec, ...] = (
     ),
     _spec(
         "WebFetch",
+        # READ_ONLY describes its effect on *this* machine. It still transmits,
+        # which is why `NETWORK` is excluded from the read-only auto-allow and
+        # why the scope is the destination host (D31).
         "Fetch a URL and process it.",
         risk=Risk.READ_ONLY,
         permissions=frozenset({Permission.NETWORK}),
+        url_params=("url",),
     ),
     _spec(
         "WebSearch",

@@ -118,6 +118,11 @@ class WorkspaceConfig(BaseModel):
 class ToolsConfig(BaseModel):
     enable_run_command: bool = False
     command_timeout_seconds: int = 120
+    #: Hosts an outbound request may reach without asking, in any mode (D31).
+    #: Empty by default: a device that ships trusting somebody else's domain
+    #: list is not fail-closed. Subdomains of an entry are covered, so
+    #: `"python.org"` also allows `docs.python.org`.
+    allowed_network_hosts: list[str] = Field(default_factory=list)
 
 
 class AppsConfig(BaseModel):

@@ -68,7 +68,9 @@ root = "var/apps"
 # A newly authored app must import cleanly and survive this long under a
 # smoke-launch before it is registered. Fail and it is quarantined, not listed.
 smoke_test_seconds = 5
-# Apps run as supervised asyncio tasks; a crash returns to the home screen.
+# Apps run in their own process (D29) — a model-authored file inside Nomad's
+# process would reach the machine without passing the broker. A crash returns
+# to the home screen.
 restart_on_crash = false
 
 # Self-configuration. (D26)
@@ -84,6 +86,9 @@ root = "var/workspace"
 follow_symlinks_outside_root = false
 
 [tools]
+# Hosts an outbound request may reach without asking, in any mode (D31).
+# Empty ships fail-closed; subdomains of an entry are covered.
+allowed_network_hosts = []
 # Arbitrary command execution. Disabled by default; never auto-runs even when
 # enabled. (D5)
 enable_run_command = false

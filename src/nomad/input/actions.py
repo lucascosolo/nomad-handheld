@@ -16,16 +16,28 @@ from collections.abc import Iterable
 
 from nomad.core.errors import NomadError
 
+# Named constants rather than bare strings at the call sites: a consumer that
+# compares against a typo silently never matches, and a menu that never
+# responds to CONFIRM is a bug with no error message.
+ACTION_NAV_UP = "NAV_UP"
+ACTION_NAV_DOWN = "NAV_DOWN"
+ACTION_NAV_LEFT = "NAV_LEFT"
+ACTION_NAV_RIGHT = "NAV_RIGHT"
+ACTION_CONFIRM = "CONFIRM"
+ACTION_BACK = "BACK"
+ACTION_1 = "ACTION_1"
+ACTION_2 = "ACTION_2"
+
 CORE_ACTIONS: frozenset[str] = frozenset(
     {
-        "NAV_UP",
-        "NAV_DOWN",
-        "NAV_LEFT",
-        "NAV_RIGHT",
-        "CONFIRM",
-        "BACK",
-        "ACTION_1",
-        "ACTION_2",
+        ACTION_NAV_UP,
+        ACTION_NAV_DOWN,
+        ACTION_NAV_LEFT,
+        ACTION_NAV_RIGHT,
+        ACTION_CONFIRM,
+        ACTION_BACK,
+        ACTION_1,
+        ACTION_2,
     }
 )
 
