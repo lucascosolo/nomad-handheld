@@ -25,10 +25,15 @@ Two properties are load-bearing and must survive any future edit:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -63,6 +68,9 @@ SCOPE_NONE = "none"
 SCOPE_WORKSPACE = "workspace"
 SCOPE_OUTSIDE = "outside"
 SCOPE_HID = "hid"
+#: Nomad's own running source tree (D21). Distinguished from `outside` because
+#: it is the one region a write must never reach, however the mode is set.
+SCOPE_SOURCE_TREE = "source_tree"
 
 DEFAULT_GRANT_TTL_SECONDS = 300.0
 DEFAULT_AUTHORIZATION_TIMEOUT = 300.0
@@ -252,6 +260,41 @@ Classifier = Callable[[ToolRequest, ToolSpec], Awaitable[Classification]]
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=1)
+def nomad_source_root() -> Path:
+    """Where Nomad's own running source lives (D21).
+
+    Resolved from this module's location rather than from config, because a
+    config value could be edited to point the rule somewhere harmless — and
+    the whole purpose of the rule is that the running tree cannot exempt
+    itself. If the package sits in a git checkout with a `pyproject.toml` the
+    repo root is returned, so `tests/`, `nomad.toml` and `scripts/` are
+    protected too; otherwise the installed package directory is the boundary.
+    """
+    package = Path(__file__).resolve().parent.parent
+    repo_root = package.parent.parent
+    if (repo_root / "pyproject.toml").is_file() and (repo_root / ".git").exists():
+        return repo_root
+    return package
+
+
+def _resolve_unconfined(raw: str, workspace: Workspace) -> Path | None:
+    """Normalise a path the way `Workspace.resolve` does, minus the boundary.
+
+    Used only to ask "where did that path *actually* point" after the
+    workspace has already rejected it. Returns `None` for anything
+    unresolvable, and every caller treats `None` as "assume the worst".
+    """
+    if "\x00" in raw:
+        return None
+    try:
+        candidate = Path(raw).expanduser()
+        joined = candidate if candidate.is_absolute() else workspace.root / candidate
+        return Path(os.path.normpath(str(joined))).resolve()
+    except (OSError, RuntimeError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
 def compute_scope(
     spec: ToolSpec, target: Target, params: dict[str, Any], workspace: Workspace
 ) -> str:
@@ -272,6 +315,13 @@ def compute_scope(
         return f"ssh:{target.id}"
     if not spec.path_params:
         return SCOPE_NONE
+
+    # Every path param is examined before settling, because `source_tree` is
+    # stricter than `outside` and must win when a call touches both. Returning
+    # on the first rejected path would let a second, source-tree path hide
+    # behind it.
+    source_root = nomad_source_root()
+    escaped = False
     for name in spec.path_params:
         value = params.get(name)
         if value is None:
@@ -279,8 +329,14 @@ def compute_scope(
         try:
             workspace.resolve(str(value))
         except PermissionDenied:
-            return SCOPE_OUTSIDE
-    return SCOPE_WORKSPACE
+            escaped = True
+            resolved = _resolve_unconfined(str(value), workspace)
+            if resolved is None or resolved == source_root or resolved.is_relative_to(source_root):
+                # `None` means the path would not normalise at all; treat an
+                # uninterpretable path as the most restricted scope, never the
+                # least. Fail closed.
+                return SCOPE_SOURCE_TREE
+    return SCOPE_OUTSIDE if escaped else SCOPE_WORKSPACE
 
 
 def never_auto_reason(spec: ToolSpec, target: Target, scope: str) -> str | None:
@@ -302,6 +358,14 @@ def never_auto_reason(spec: ToolSpec, target: Target, scope: str) -> str | None:
         return "any HID output"
     if spec.risk is Risk.DESTRUCTIVE:
         return "the action is DESTRUCTIVE"
+    if scope == SCOPE_SOURCE_TREE and spec.permissions & ESCALATING_PERMISSIONS:
+        # Stated separately from the general `outside` rule below, which would
+        # also catch it today. D21 names this rule specifically, and it must
+        # keep holding if the general one is ever relaxed.
+        return (
+            "writing to or executing in Nomad's own running source tree "
+            "(use D22's self-update path)"
+        )
     if spec.permissions & ESCALATING_PERMISSIONS and scope != SCOPE_WORKSPACE:
         return f"writes or exec outside the workspace root (scope={scope})"
     return None
@@ -432,7 +496,14 @@ class PermissionBroker:
             )
 
         # --- read-only inside the workspace auto-runs in all modes (D15) ---
-        if spec.risk is Risk.READ_ONLY and scope in (SCOPE_WORKSPACE, SCOPE_NONE):
+        # `source_tree` is included: D21 forbids *writing* to Nomad's own
+        # source, not reading it, and a device that has to be asked before it
+        # may read its own code cannot usefully reason about itself (D22).
+        if spec.risk is Risk.READ_ONLY and scope in (
+            SCOPE_WORKSPACE,
+            SCOPE_NONE,
+            SCOPE_SOURCE_TREE,
+        ):
             return await self._finalize(
                 request,
                 mode,
@@ -830,6 +901,70 @@ class AuthorizationQueue:
         await self._bus.publish(
             Event(type=event_type, source="authorization_queue", payload=payload)
         )
+
+
+# ---------------------------------------------------------------------------
+# grant vault
+# ---------------------------------------------------------------------------
+
+#: How long a stashed grant stays claimable. Long enough to cover a round trip
+#: out to the backend and back, short enough that it is not a replay window.
+DEFAULT_VAULT_TTL = 120.0
+
+
+def canonical_key(tool: str, params: dict[str, Any]) -> str:
+    """Stable key for one (tool, arguments) pair.
+
+    `sort_keys` plus `default=str` makes the key stable across dict ordering
+    and tolerant of non-JSON values, rather than raising on them — a key
+    function that can throw would turn an odd argument into an outage.
+    """
+    body = json.dumps(params, sort_keys=True, default=str)
+    return f"{tool}:{hashlib.sha256(body.encode()).hexdigest()}"
+
+
+class GrantVault:
+    """Short-lived, single-use holding area for grants awaiting execution.
+
+    Exists because approval and execution can be separated by a process
+    boundary: when the model's tool call is authorized here but executed after
+    a round trip through an MCP server, something has to carry the grant
+    across, or `ToolExecutor.run(grant, ...)` would have to be relaxed into
+    `run(request)` — which is precisely the collapse D4 forbids.
+
+    Single-use and TTL-bounded, both load-bearing: a grant that could be popped
+    twice, or popped an hour later, is a replay window straight through the
+    pipeline. Keyed on the *arguments* as well as the tool, so a call whose
+    params changed after approval finds nothing.
+    """
+
+    def __init__(self, *, ttl_seconds: float = DEFAULT_VAULT_TTL) -> None:
+        self._ttl = ttl_seconds
+        self._entries: dict[str, tuple[AuthorizationGrant, ToolRequest, datetime]] = {}
+
+    def stash(self, grant: AuthorizationGrant, request: ToolRequest) -> str:
+        key = canonical_key(request.tool, request.params)
+        self._entries[key] = (grant, request, _now() + timedelta(seconds=self._ttl))
+        return key
+
+    def pop(
+        self, tool: str, params: dict[str, Any]
+    ) -> tuple[AuthorizationGrant, ToolRequest] | None:
+        self._expire()
+        entry = self._entries.pop(canonical_key(tool, params), None)
+        if entry is None:
+            return None
+        grant, request, _ = entry
+        return grant, request
+
+    def _expire(self) -> None:
+        now = _now()
+        for key in [k for k, (_, _, expires) in self._entries.items() if expires <= now]:
+            del self._entries[key]
+
+    def __len__(self) -> int:
+        self._expire()
+        return len(self._entries)
 
 
 # ---------------------------------------------------------------------------

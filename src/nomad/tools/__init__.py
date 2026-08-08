@@ -17,13 +17,16 @@ from nomad.tools.permissions import (
     Decision,
     DecisionOutcome,
     GrantSource,
+    GrantVault,
     PendingAuthorization,
     PermissionBroker,
     Resolution,
     ToolExecutor,
     ToolRequest,
+    canonical_key,
     compute_scope,
     never_auto_reason,
+    nomad_source_root,
 )
 from nomad.tools.registry import ToolRegistry
 from nomad.tools.workspace import Workspace
@@ -36,6 +39,7 @@ __all__ = [
     "Decision",
     "DecisionOutcome",
     "GrantSource",
+    "GrantVault",
     "PendingAuthorization",
     "Permission",
     "PermissionBroker",
@@ -49,6 +53,8 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "Workspace",
+    "canonical_key",
     "compute_scope",
     "never_auto_reason",
+    "nomad_source_root",
 ]

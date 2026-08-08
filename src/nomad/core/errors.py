@@ -64,5 +64,9 @@ class ProtocolError(NomadError):
     """A message failed to encode, decode, or frame correctly."""
 
 
-class ProviderError(NomadError):
-    """An AI provider failed to produce a response."""
+class AgentError(NomadError):
+    """An agent backend failed to start, send, or produce a response (D24).
+
+    Replaces the pre-pivot `ProviderError`: after D19 there is no `AIProvider`
+    to fail, only a backend.
+    """

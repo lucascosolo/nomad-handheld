@@ -44,6 +44,17 @@ expected_cli_version = "2.1.224"
 # instead of against the subscription. (D20)
 oauth_token_env = "CLAUDE_CODE_OAUTH_TOKEN"
 model = "claude-sonnet-5"
+# Capability switches, permissive by design. The target is that Nomad is as
+# good at answering questions and writing code as Claude Code on a laptop, and
+# skills, CLAUDE.md, plugins and MCP servers are a real part of why the laptop
+# version is good. The broker (D21) is what makes that safe - crippling the
+# toolset never was.
+setting_sources = ["user", "project", "local"]
+skills = "all"
+# False lets the operator's own MCP servers load. Their tools still need a
+# declaration in agent/claude_tools.py before the bridge will allow one, so
+# relaxing this does not relax fail-closed.
+strict_mcp_config = false
 
 [agent.remote_llm]
 # Planned (D24). A model on a workstation, reached over Tailscale - Nomad holds

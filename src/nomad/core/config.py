@@ -63,12 +63,30 @@ class ClaudeCliConfig(BaseModel):
     """Claude Code headless backend (D19, D20).
 
     The OAuth token is named here, never stored here.
+
+    The three capability switches below default to *permissive* on purpose.
+    Nomad's goal is that the handheld is as effective at answering questions
+    and writing code as Claude Code on a laptop, and skills, `CLAUDE.md`,
+    plugins and MCP servers are a real part of why the laptop is effective.
+    Capability was never the thing to cripple — the broker is (D21).
     """
 
     cli_path: str = "claude"
     expected_cli_version: str = "2.1.224"
     oauth_token_env: str = "CLAUDE_CODE_OAUTH_TOKEN"
     model: str = "claude-sonnet-5"
+    #: Where the CLI reads settings, `CLAUDE.md` and plugins from. Empty means
+    #: "nothing but this config", which is fast and predictable and also
+    #: switches off most of what makes the tool good.
+    setting_sources: list[str] = Field(default_factory=lambda: ["user", "project", "local"])
+    #: `"all"`, or an explicit list of skill names. Skills add prompts and
+    #: workflows, not ungated tools — they run through the same built-ins the
+    #: broker already classifies.
+    skills: str | list[str] = "all"
+    #: False lets the operator's own MCP servers load. Their tools still have
+    #: no declaration in `agent/claude_tools.py`, so the bridge denies them
+    #: until one is added — fail-closed survives the relaxation (D21).
+    strict_mcp_config: bool = False
 
 
 class RemoteLlmConfig(BaseModel):

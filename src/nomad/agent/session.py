@@ -1,18 +1,25 @@
-"""`AgentSession` — the persistent session (D11).
+"""`AgentSession` — the persistent session (D11), now around a backend (D19).
 
 Nomad is a session, not a request/response service. `AgentSession` is a
 long-lived `Component` started at boot and running until shutdown; HTTP,
 WebSocket and the ESP32 display are *views* onto it. Closing the screen does
 not end the conversation.
 
-The session owns three things a view must never own:
+The session owns four things a view must never own:
 
-* **conversation state**, including which turns are in flight;
+* **conversation state**, including which turn is in flight;
 * **the permission mode** (D14) — switchable at runtime, persisted, so a
   reboot does not silently restore a more permissive setting than the last
   one chosen;
 * **the pending-authorization queue**, so a prompt raised while the screen was
-  off is still waiting when it comes back.
+  off is still waiting when it comes back;
+* **the backend** (D24), started and stopped with the session rather than per
+  request — a subprocess respawned per message would lose the context window
+  that makes the thing worth having.
+
+What it no longer owns, after D19: the turn loop and context compaction. The
+backend does those. What survived unchanged: the entire permission pipeline,
+which is why the pivot cost far less than it looks.
 
 At boot, `resume()` looks for turns left non-terminal by a crash or power cut
 and either re-drives them or aborts them cleanly, recording which. It never
@@ -22,26 +29,33 @@ leaves one in limbo.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from nomad.agent.context import ContextManager, Summarizer
-from nomad.agent.loop import TurnLoop, TurnOutcome
-from nomad.agent.provider import AIProvider
+from nomad.agent.backends import create_backend
+from nomad.agent.backends.base import AgentBackend, AgentEvent, AgentEventKind, BackendCapability
+from nomad.agent.claude_tools import register_backend_tools
+from nomad.agent.permission_bridge import PermissionBridge
 from nomad.core.config import NomadConfig, PermissionMode
+from nomad.core.errors import AgentError
 from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.core.logging import get_logger
+from nomad.mcp.server import McpToolRouter, build_hardware_tools, register_hardware_tools
 from nomad.storage.repositories.conversations import ConversationsRepository
 from nomad.storage.repositories.grants import GrantsRepository
 from nomad.targets.registry import TargetRegistry
+from nomad.tools.base import Tool
 from nomad.tools.permissions import (
     DEFAULT_AUTHORIZATION_TIMEOUT,
     AuthorizationGrant,
     AuthorizationQueue,
     Classifier,
+    GrantVault,
     PendingAuthorization,
     PermissionBroker,
     ToolExecutor,
@@ -53,8 +67,27 @@ logger = get_logger(__name__)
 
 EVENT_MODE_CHANGED = "agent.mode_changed"
 EVENT_RESUMED = "agent.resumed"
+EVENT_AGENT_EVENT = "agent.event"
 
 _NON_RESUMABLE = ("running", "awaiting_grant")
+
+
+class TurnOutcomeStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+class TurnOutcome(BaseModel):
+    """What one turn produced. The unit a view renders and storage records."""
+
+    turn_id: str
+    status: TurnOutcomeStatus
+    text: str = ""
+    tool_calls: list[str] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: str | None = None
 
 
 class ResumeReport(BaseModel):
@@ -80,13 +113,13 @@ class AgentSession:
         targets: TargetRegistry,
         tools: ToolRegistry,
         workspace: Workspace,
-        provider: AIProvider,
+        backend: AgentBackend | None = None,
+        hardware_tools: list[Tool] | None = None,
         classifier: Classifier | None = None,
-        summarizer: Summarizer | None = None,
-        context: ContextManager | None = None,
         session_id: str | None = None,
         resume_pending: bool = True,
         authorization_timeout: float = DEFAULT_AUTHORIZATION_TIMEOUT,
+        turn_timeout: float | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -95,15 +128,15 @@ class AgentSession:
         self._targets = targets
         self._tools = tools
         self._workspace = workspace
-        self._provider = provider
         self._session_id = session_id
         self._resume_pending = resume_pending
         self._authorization_timeout = authorization_timeout
-        self._summarizer = summarizer
+        self._turn_timeout = turn_timeout
 
         self._mode = config.agent.mode
         self._state = ComponentState.NEW
         self._turn_lock = asyncio.Lock()
+        self._current_turn_id: str | None = None
         self._current_turn_task: asyncio.Task[Any] | None = None
         self._resume_report: ResumeReport | None = None
 
@@ -130,12 +163,35 @@ class AgentSession:
             bus=bus,
             default_timeout=authorization_timeout,
         )
-        self._context = context or ContextManager(
-            conversations=conversations,
+
+        # The tools the backend may call, on both sides of the boundary:
+        # Nomad's hardware (which Nomad executes) and the backend's own tools
+        # (which it executes, but which Nomad still classifies and gates).
+        self._hardware = hardware_tools if hardware_tools is not None else build_hardware_tools()
+        register_hardware_tools(tools, self._hardware)
+        register_backend_tools(tools)
+
+        self._vault = GrantVault()
+        self._bridge = PermissionBridge(
+            broker=self._broker,
+            queue=self._queue,
+            tools=tools,
             bus=bus,
-            compact_at=config.agent.compact_at,
+            session_id_provider=lambda: self.session_id,
+            mode_provider=lambda: self._mode,
+            turn_id_provider=lambda: self._current_turn_id,
+            vault=self._vault,
+            timeout=authorization_timeout,
         )
-        self._loop: TurnLoop | None = None
+        self._router = McpToolRouter(
+            executor=self._executor,
+            vault=self._vault,
+            specs=[tool.spec for tool in self._hardware],
+        )
+        self._backend = backend or create_backend(
+            config, bridge=self._bridge, router=self._router, cwd=str(workspace.root)
+        )
+        self._events: AsyncIterator[AgentEvent] | None = None
 
     # -- accessors ---------------------------------------------------------
 
@@ -166,8 +222,20 @@ class AgentSession:
         return self._queue
 
     @property
-    def context(self) -> ContextManager:
-        return self._context
+    def bridge(self) -> PermissionBridge:
+        return self._bridge
+
+    @property
+    def router(self) -> McpToolRouter:
+        return self._router
+
+    @property
+    def backend(self) -> AgentBackend:
+        return self._backend
+
+    @property
+    def current_turn_id(self) -> str | None:
+        return self._current_turn_id
 
     @property
     def last_resume_report(self) -> ResumeReport | None:
@@ -181,9 +249,7 @@ class AgentSession:
         self._workspace.ensure_exists()
 
         existing = (
-            await self._conversations.get_session(self._session_id)
-            if self._session_id
-            else None
+            await self._conversations.get_session(self._session_id) if self._session_id else None
         )
         if existing is None:
             session = await self._conversations.create_session(
@@ -196,27 +262,18 @@ class AgentSession:
             # outranks the config default on restart (D14).
             self._mode = PermissionMode(existing.mode)
 
-        self._loop = TurnLoop(
-            provider=self._provider,
-            broker=self._broker,
-            executor=self._executor,
-            queue=self._queue,
-            tools=self._tools,
-            conversations=self._conversations,
-            context=self._context,
-            bus=self._bus,
-            config=self._config,
-            session_id=self._session_id,
-            mode_provider=lambda: self._mode,
-            summarizer=self._summarizer,
-            authorization_timeout=self._authorization_timeout,
-        )
+        await self._backend.start()
+        self._events = self._backend.events()
 
         self._resume_report = await self.resume()
         self._state = ComponentState.STARTED
         logger.info(
             "Agent session started",
-            extra={"session_id": self._session_id, "mode": str(self._mode)},
+            extra={
+                "session_id": self._session_id,
+                "mode": str(self._mode),
+                "backend": self._backend.name,
+            },
         )
 
     async def stop(self) -> None:
@@ -230,6 +287,10 @@ class AgentSession:
                 pass
             except Exception as exc:  # noqa: BLE001 - shutdown is best effort
                 logger.warning("In-flight turn failed during shutdown", extra={"error": str(exc)})
+        try:
+            await self._backend.stop()
+        except Exception as exc:  # noqa: BLE001 - never fail a shutdown
+            logger.warning("Backend stop failed", extra={"error": str(exc)})
         # Anything still non-terminal is aborted rather than left in limbo.
         for turn in await self._conversations.find_incomplete_turns():
             if turn.session_id == self._session_id:
@@ -284,24 +345,134 @@ class AgentSession:
 
         if self._resume_pending:
             for turn_id in list(report.resumed):
-                turn = await self._conversations.get_turn(turn_id)
-                if turn is not None and self._loop is not None:
-                    await self._loop.resume_turn(turn)
+                messages = await self._conversations.get_messages_for_turn(turn_id)
+                prompt = next((m for m in messages if m.role == "user"), None)
+                if prompt is None:  # pragma: no cover - filtered above
+                    continue
+                await self._conversations.update_turn_status(turn_id, "aborted")
+                await self.send(str(prompt.content.get("text", "")))
         return report
 
     # -- conversation ------------------------------------------------------
 
     async def send(self, text: str) -> TurnOutcome:
         """Run one turn. Serialized: one turn at a time per session."""
-        if self._loop is None:
-            raise RuntimeError("AgentSession has not been started")
         async with self._turn_lock:
-            task = asyncio.ensure_future(self._loop.run_turn(text))
+            task = asyncio.ensure_future(self._run_turn(text))
             self._current_turn_task = task
             try:
                 return await task
             finally:
                 self._current_turn_task = None
+
+    async def _run_turn(self, text: str) -> TurnOutcome:
+        """Drive one turn through the backend and record what happened.
+
+        The backend owns the loop (D19), so this is not a turn *loop* — it is
+        bookkeeping around one. The turn row is written **before** the backend
+        is asked to do anything, so a power cut mid-turn leaves a durable
+        record of what was in flight rather than a silent gap (D11, D18).
+        """
+        if BackendCapability.OWN_LOOP not in self._backend.capabilities:
+            # An honest refusal beats half a loop. D24 records that a backend
+            # without OWN_LOOP needs Nomad to supply one; until that exists,
+            # say so rather than appearing to work.
+            raise AgentError(
+                f"Backend '{self._backend.name}' does not bring its own loop and Nomad "
+                "does not supply one yet (D24)",
+                {"backend": self._backend.name},
+            )
+        if self._events is None:
+            raise RuntimeError("AgentSession has not been started")
+
+        turn = await self._conversations.create_turn(session_id=self.session_id, status="running")
+        self._current_turn_id = turn.id
+        await self._conversations.add_message(
+            turn_id=turn.id, session_id=self.session_id, role="user", content={"text": text}
+        )
+
+        outcome = TurnOutcome(turn_id=turn.id, status=TurnOutcomeStatus.COMPLETED)
+        try:
+            await self._backend.send(text, session_id=self.session_id)
+            await self._consume(turn.id, outcome)
+        except asyncio.CancelledError:
+            await self._conversations.update_turn_status(turn.id, "aborted")
+            self._current_turn_id = None
+            raise
+        except Exception as exc:  # noqa: BLE001 - a backend failure is a failed turn
+            logger.error(
+                "Turn failed", extra={"turn_id": turn.id, "error": f"{type(exc).__name__}: {exc}"}
+            )
+            outcome.status = TurnOutcomeStatus.FAILED
+            outcome.error = f"{type(exc).__name__}: {exc}"
+
+        status = "completed" if outcome.status is TurnOutcomeStatus.COMPLETED else "failed"
+        await self._conversations.update_turn_status(turn.id, status)  # type: ignore[arg-type]
+        if outcome.text:
+            await self._conversations.add_message(
+                turn_id=turn.id,
+                session_id=self.session_id,
+                role="assistant",
+                content={"text": outcome.text, "tool_calls": outcome.tool_calls},
+            )
+        self._current_turn_id = None
+        return outcome
+
+    async def _consume(self, turn_id: str, outcome: TurnOutcome) -> None:
+        """Drain backend events until the turn ends, republishing each one."""
+        assert self._events is not None
+        chunks: list[str] = []
+
+        async def drain() -> None:
+            assert self._events is not None
+            async for event in self._events:
+                stamped = event.model_copy(update={"turn_id": event.turn_id or turn_id})
+                await self._bus.publish(
+                    Event(
+                        type=EVENT_AGENT_EVENT,
+                        source="agent_session",
+                        payload=stamped.model_dump(mode="json"),
+                    )
+                )
+                if stamped.kind is AgentEventKind.TEXT:
+                    chunks.append(stamped.text)
+                elif stamped.kind is AgentEventKind.TOOL_CALL and stamped.tool_name:
+                    outcome.tool_calls.append(stamped.tool_name)
+                elif stamped.kind is AgentEventKind.USAGE:
+                    outcome.input_tokens += stamped.input_tokens
+                    outcome.output_tokens += stamped.output_tokens
+                elif stamped.kind is AgentEventKind.ERROR:
+                    outcome.status = TurnOutcomeStatus.FAILED
+                    outcome.error = stamped.error
+                    return
+                elif stamped.kind is AgentEventKind.TURN_COMPLETE:
+                    if not stamped.ok:
+                        outcome.status = TurnOutcomeStatus.FAILED
+                        outcome.error = stamped.error
+                    return
+            # The stream ended without a terminal event: the backend went away
+            # mid-turn. That is a failed turn, not a completed empty one.
+            outcome.status = TurnOutcomeStatus.FAILED
+            outcome.error = outcome.error or "backend stream ended mid-turn"
+
+        try:
+            if self._turn_timeout is None:
+                await drain()
+            else:
+                await asyncio.wait_for(drain(), timeout=self._turn_timeout)
+        except TimeoutError:
+            outcome.status = TurnOutcomeStatus.FAILED
+            outcome.error = f"turn exceeded {self._turn_timeout}s"
+            await self.interrupt()
+        finally:
+            outcome.text = "".join(chunks)
+
+    async def interrupt(self) -> None:
+        """Stop the turn in flight. Safe to call when there is none."""
+        try:
+            await self._backend.interrupt()
+        except Exception as exc:  # noqa: BLE001 - an interrupt must not raise
+            logger.warning("Backend interrupt failed", extra={"error": str(exc)})
 
     # -- permission mode ---------------------------------------------------
 
@@ -360,3 +531,8 @@ class AgentSession:
 
     async def deny(self, pending_id: str, reason: str = "denied by operator") -> None:
         await self._queue.deny(pending_id, reason)
+
+
+#: Kept as a named type so views can annotate a callback without importing the
+#: whole session module's internals.
+ModeProvider = Callable[[], PermissionMode]
