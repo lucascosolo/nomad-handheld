@@ -30,11 +30,19 @@ class Screen:
     html: str
 
 
+#: How many past screens are kept. Bounded because this display is no longer
+#: only a test fixture: it is what a running device draws on, and a renderer
+#: streaming a turn redraws several times a second. An unbounded list would be
+#: a slow leak on a 4 GB Pi that is expected to stay powered for days.
+DEFAULT_HISTORY_LIMIT = 200
+
+
 class HeadlessDisplay:
     """Renders every `display_*` tool call to text/HTML, in-process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, history_limit: int = DEFAULT_HISTORY_LIMIT) -> None:
         self._screen = Screen(text="", html="<pre></pre>")
+        self._history_limit = history_limit
         self.history: list[Screen] = []
 
     @property
@@ -75,3 +83,5 @@ class HeadlessDisplay:
     def _render(self, text: str) -> None:
         self._screen = Screen(text=text, html=f"<pre>{escape(text)}</pre>")
         self.history.append(self._screen)
+        if len(self.history) > self._history_limit:
+            del self.history[: len(self.history) - self._history_limit]

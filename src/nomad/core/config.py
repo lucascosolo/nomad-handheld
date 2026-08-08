@@ -179,6 +179,24 @@ class DisplayConfig(BaseModel):
     height: int = 240
 
 
+class ViewConfig(BaseModel):
+    """Serving the headless screen over loopback so a human can watch it (D9).
+
+    Only meaningful while `[display].driver` is a headless one — an ESP32 has
+    its own glass and needs no browser. `host` is validated at start and
+    refused if it is not a loopback address: the API's auth problem is
+    deliberately deferred, and this must not quietly become the network
+    service that gets there first.
+    """
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = 8081
+    #: How often the browser re-fetches. Not a stream; a refresh is enough for
+    #: a screen that changes a few times a second at most.
+    refresh_seconds: float = 1.0
+
+
 class UsbHidConfig(BaseModel):
     driver: str = "mock"
 
@@ -262,6 +280,7 @@ class NomadConfig(BaseModel):
     apps: AppsConfig = Field(default_factory=AppsConfig)
     settings: SettingsConfig = Field(default_factory=SettingsConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
+    view: ViewConfig = Field(default_factory=ViewConfig)
     usb_hid: UsbHidConfig = Field(default_factory=UsbHidConfig)
     battery: BatteryConfig = Field(default_factory=BatteryConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)

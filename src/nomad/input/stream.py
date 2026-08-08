@@ -28,6 +28,11 @@ class InputStream:
     """Wraps an `InputMapper` with the asyncio plumbing that keeps repeat
     events flowing without a consumer having to poll `tick()` itself."""
 
+    #: It already had `start()`/`stop()`; this is what makes it satisfy
+    #: `core.lifecycle.Component` so the composition root can own its tick
+    #: loop rather than leaking one background task.
+    name = "input_stream"
+
     def __init__(
         self,
         mapper: InputMapper,

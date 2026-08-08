@@ -72,6 +72,16 @@ EVENT_MODE_CHANGED = "agent.mode_changed"
 EVENT_RESUMED = "agent.resumed"
 EVENT_AGENT_EVENT = "agent.event"
 EVENT_SESSION_ROLLED = "agent.session_rolled"
+#: A turn's own boundaries, published for views (D11: HTTP, WebSocket and the
+#: screen are views onto the session). `agent.event` alone cannot bracket a
+#: turn: the first backend event may be seconds away, so a view watching only
+#: that shows nothing between the keypress and the model's first token. And
+#: because the bus drops slow subscribers by design (D6), a view that
+#: accumulated the text chunks itself could end a turn holding an incomplete
+#: answer — so `agent.turn_finished` carries the whole of it, and is the only
+#: thing a view should treat as final.
+EVENT_TURN_STARTED = "agent.turn_started"
+EVENT_TURN_FINISHED = "agent.turn_finished"
 
 _NON_RESUMABLE = ("running", "awaiting_grant")
 
@@ -517,6 +527,14 @@ class AgentSession:
             turn_id=turn.id, session_id=self.session_id, role="user", content={"text": text}
         )
 
+        await self._bus.publish(
+            Event(
+                type=EVENT_TURN_STARTED,
+                source="agent_session",
+                payload={"session_id": self.session_id, "turn_id": turn.id, "text": text},
+            )
+        )
+
         outcome = TurnOutcome(turn_id=turn.id, status=TurnOutcomeStatus.COMPLETED)
         try:
             await self._backend.send(text, session_id=self.session_id)
@@ -524,6 +542,8 @@ class AgentSession:
         except asyncio.CancelledError:
             await self._conversations.update_turn_status(turn.id, "aborted")
             self._current_turn_id = None
+            outcome.status = TurnOutcomeStatus.INTERRUPTED
+            await self._publish_turn_finished(outcome)
             raise
         except Exception as exc:  # noqa: BLE001 - a backend failure is a failed turn
             logger.error(
@@ -541,7 +561,28 @@ class AgentSession:
                 content={"text": outcome.text, "tool_calls": outcome.tool_calls},
             )
         self._current_turn_id = None
+        await self._publish_turn_finished(outcome)
         return outcome
+
+    async def _publish_turn_finished(self, outcome: TurnOutcome) -> None:
+        """Announce the end of a turn, carrying the whole answer.
+
+        Never raises: a view that cannot be told is not a reason to fail a turn
+        that already succeeded.
+        """
+        try:
+            await self._bus.publish(
+                Event(
+                    type=EVENT_TURN_FINISHED,
+                    source="agent_session",
+                    payload={
+                        "session_id": self._session_id,
+                        **outcome.model_dump(mode="json"),
+                    },
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - telling a view must never fail a turn
+            logger.warning("Could not publish turn_finished", extra={"error": str(exc)})
 
     async def _consume(self, turn_id: str, outcome: TurnOutcome) -> None:
         """Drain backend events until the turn ends, republishing each one."""
