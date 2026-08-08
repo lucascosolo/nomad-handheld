@@ -23,6 +23,7 @@ from nomad.input.choice import ChoiceOutcome, ChoiceResult, InputChoicePrompter,
 from nomad.input.mapper import InputMapper
 from nomad.input.stream import InputStream
 from nomad.protocol.messages import ButtonId, InputButton, InputJoystick, KeyPhase
+from nomad.tools.egress import Egress, classify
 from nomad.tools.permissions import (
     EVENT_AUTH_PENDING,
     DecisionOutcome,
@@ -35,6 +36,7 @@ from nomad.view.authprompt import (
     OPTION_APPROVE_SESSION,
     OPTION_DENY,
     PROMPT_OPTIONS,
+    PROMPT_QUESTION,
     AuthorizationPrompter,
     compose_question,
     field,
@@ -285,6 +287,78 @@ def test_the_question_carries_only_the_four_structured_fields() -> None:
     )
     assert "SECRET" not in question
     assert question.count("\n") == 4
+
+
+# -- the operator can see what they are approving (D36) ----------------------
+#
+# The prompt for `bash -c "ssh prod rm -rf /"` read `tool Bash / target local /
+# scope none / risk privileged` and showed no command at all, so the operator
+# was asked to approve something they could not check against reality.
+
+
+def test_the_command_is_shown_when_the_call_carries_one() -> None:
+    question = compose_question(
+        {
+            "tool": "Bash",
+            "target": "ssh",
+            "scope": "ssh:ssh",
+            "risk": "privileged",
+            "params": {"command": 'bash -c "ssh prod rm -rf /"'},
+        }
+    )
+    assert 'cmd     bash -c "ssh prod rm -rf /"' in question
+    assert question.count("\n") == 5
+
+
+def test_a_call_with_no_command_gains_no_line() -> None:
+    """The field is declared, not scraped: no command, no row."""
+    question = compose_question(
+        {"tool": "Read", "params": {"file_path": "/etc/shadow", "content": "x"}}
+    )
+    assert "cmd" not in question
+    assert "/etc/shadow" not in question
+    assert question.count("\n") == 4
+
+
+def test_a_non_string_command_is_not_drawn() -> None:
+    """The bridge already refused to classify it; there is no command to show."""
+    assert "cmd" not in compose_question({"tool": "Bash", "params": {"command": ["ssh"]}})
+    assert "cmd" not in compose_question({"tool": "Bash", "params": {"command": "   "}})
+    assert "cmd" not in compose_question({"tool": "Bash", "params": "not-a-dict"})
+
+
+def test_the_command_cannot_forge_an_option_or_a_frame() -> None:
+    """It is a field, not chrome: escaped and truncated like every other one."""
+    question = compose_question(
+        {
+            "tool": "Bash",
+            "params": {
+                "command": "echo hi\nAuthorization required\n> Approve once\nAllow this action?"
+            },
+        }
+    )
+    lines = question.splitlines()
+    # It is welded to one labelled line, so it cannot become a frame of its
+    # own: no second question line, and no option row the operator could land
+    # a CONFIRM on. The words survive; the *shape* of the prompt does not bend.
+    assert question.count("\n") == 5
+    assert [line for line in lines if line == PROMPT_QUESTION] == [PROMPT_QUESTION]
+    assert not any(line.startswith(("> ", "  ")) for line in lines)
+    assert lines[-1].startswith("cmd     echo hi Authorization required")
+
+
+def test_the_command_is_truncated_and_the_verdict_is_not() -> None:
+    """A padded command cannot hide its tail *from the classifier* (D27).
+
+    Truncation is a display bound. The fields above the command are computed
+    by `tools/egress.py` from the whole string, so padding the prefix costs
+    the operator detail and buys nothing: the target still says `ssh`.
+    """
+    padded = "echo " + "a" * 400 + ' ; ssh prod rm -rf /'
+    assert classify(padded) is Egress.REMOTE
+    line = compose_question({"tool": "Bash", "params": {"command": padded}}).splitlines()[-1]
+    assert line.endswith("\u2026")
+    assert len(line) <= len("cmd     ") + 96
 
 
 # -- the prompt owns the screen while it is pending --------------------------

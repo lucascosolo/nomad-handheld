@@ -17,11 +17,23 @@ that the model can learn to ask for.
 
 Two rules follow from drawing while holding model-supplied data:
 
-* **Structured fields only.** Tool name, target, scope, risk — escaped and
-  truncated, every one of them. `params` is *never* drawn. Model-authored text
-  as prompt chrome is a surface on which the model composes its own convincing
-  approval screen, and the operator has no way to tell the frame apart from
-  Nomad's own.
+* **Structured fields only.** Tool name, target, scope, risk, and — since the
+  third adversarial review — the command, when the call carries one. Each is
+  escaped and truncated. `params` at large is still *never* drawn:
+  model-authored text as prompt *chrome* is a surface on which the model
+  composes its own convincing approval screen, and the operator has no way to
+  tell the frame apart from Nomad's own.
+
+  The command is a declared, labelled field and not chrome, which is what makes
+  it admissible under the same rule. It is there because a prompt that named a
+  `Bash` call on target `local` and showed no command at all was asking the
+  operator to approve something they could not see — and the review's example,
+  `bash -c "ssh prod rm -rf /"`, was mislabelled `local` at the same time. Two
+  properties keep it honest: `field()` collapses whitespace, so no value can
+  add a line or forge an option, and the *verdict* fields above it are computed
+  from the whole command by `tools/egress.py` — never from the truncated
+  prefix. A command padded so its tail falls off the screen therefore still
+  reports the target its tail earned it.
 * **Silence still denies.** Showing the prompt changes what the operator sees,
   never what a timeout means (D21). Every non-approval below ends in
   `deny()`, and they are *distinguishable in the logs*, because "a human said
@@ -38,6 +50,7 @@ from nomad.core.events import Event, EventBus, Unsubscribe
 from nomad.core.lifecycle import ComponentState
 from nomad.core.logging import get_logger
 from nomad.input.choice import ChoiceOutcome, ChoiceResult, ShowChoice
+from nomad.tools.egress import COMMAND_PARAMS
 from nomad.tools.permissions import EVENT_AUTH_PENDING
 from nomad.view.screen import ScreenOwner, ScreenView
 
@@ -73,6 +86,12 @@ _EXPIRY_MARGIN_S = 2.0
 #: Long enough to identify a tool or a path fragment, short enough that no
 #: single field can push the options off a pocket screen.
 _MAX_FIELD_CHARS = 48
+
+#: The command gets more room than a label field, because it is the only field
+#: whose content the operator has to *read* rather than recognise. Still one
+#: line and still truncated: the options must stay on the glass, and the fields
+#: above it — not this string — are what the decision is routed on.
+_MAX_COMMAND_CHARS = 96
 
 #: What the operator's answer was, in one word, for the log line. `operator`
 #: and `no_operator` are the pair that must never be confused.
@@ -138,22 +157,42 @@ def field(value: object, *, limit: int = _MAX_FIELD_CHARS) -> str:
     return text or "?"
 
 
-def compose_question(payload: dict[str, Any]) -> str:
-    """The prompt body: four structured fields, and nothing else (D36).
+def command_of(payload: dict[str, Any]) -> str | None:
+    """The shell command this call carries, if it carries one.
 
-    Deliberately no `params` and no free-form reason. The operator loses
-    detail — this is the cost D36 accepted — and gains a frame the model
-    cannot write a single character of chrome into.
+    Read through `egress.COMMAND_PARAMS` rather than a second list of key
+    names, so the field the operator is shown is by construction the same one
+    the classifier routed on. A non-string value is not drawn: it is not a
+    command, and the bridge has already refused to classify it.
     """
-    return "\n".join(
-        [
-            PROMPT_QUESTION,
-            f"tool    {field(payload.get('tool'))}",
-            f"target  {field(payload.get('target'))}",
-            f"scope   {field(payload.get('scope'))}",
-            f"risk    {field(payload.get('risk'))}",
-        ]
-    )
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    for key in COMMAND_PARAMS:
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def compose_question(payload: dict[str, Any]) -> str:
+    """The prompt body: structured fields, and nothing else (D36).
+
+    Deliberately no free-form reason and no `params` beyond the one declared
+    command field. The operator loses detail — this is the cost D36 accepted —
+    and gains a frame the model cannot write a single character of chrome into.
+    """
+    lines = [
+        PROMPT_QUESTION,
+        f"tool    {field(payload.get('tool'))}",
+        f"target  {field(payload.get('target'))}",
+        f"scope   {field(payload.get('scope'))}",
+        f"risk    {field(payload.get('risk'))}",
+    ]
+    command = command_of(payload)
+    if command is not None:
+        lines.append(f"cmd     {field(command, limit=_MAX_COMMAND_CHARS)}")
+    return "\n".join(lines)
 
 
 def make_show(view: ScreenView) -> ShowChoice:

@@ -61,6 +61,7 @@ from nomad.mcp.server import build_hardware_tools
 from nomad.mcp.skills import build_skill_tools
 from nomad.mcp.voice import build_voice_tools
 from nomad.memory.store import MemoryStore
+from nomad.notifications.delivery import NotificationDelivery, ScreenNotificationSink
 from nomad.notifications.queue import NotificationQueue
 from nomad.offline import IntentLedger, OfflineResponder, PromotionAnalyst, default_router
 from nomad.resources.governor import ResourceGovernor
@@ -109,7 +110,12 @@ OFFLINE_TITLE = "Onboard"
 #: declarative — the tier has no `run` and no handle — so this records what may
 #: never be suspended, and nothing more. Speech-to-text is the reason the tier
 #: exists: it is the one heavy local computation that a turn is *waiting on*.
-_INTERACTIVE_WORKLOADS = ("notifications", "speech_to_text")
+#:
+#: `notifications` used to be a third string here and nothing else — a workload
+#: declared for a delivery loop that did not exist, which is how "timers never
+#: fire" hid behind a device that looked correctly wired. It is now registered
+#: from `self.delivery`, so the declaration cannot outlive the thing it names.
+_INTERACTIVE_WORKLOADS = ("speech_to_text",)
 
 
 class _Migrator:
@@ -277,6 +283,24 @@ class NomadApp:
             if self.intent_router is not None
             else None
         )
+        # The consumer chunk N was written for and never got. Without it
+        # `deliver_due()` had no caller in `src/` at all: every timer, alarm
+        # and reminder was stored, confirmed to the operator, and then never
+        # shown. It draws through the same `ScreenOwner` as the other writers
+        # and declines rather than painting over an authorization prompt
+        # (D36) — see `notifications/delivery.py` for why that is the right
+        # arbitration for this writer specifically.
+        #
+        # `announce=` is left unset deliberately. D37 gives the device a
+        # `speak` tool and speaking a fired timer is desirable, but the
+        # configured audio path resolves to a stub with nothing in the jack —
+        # so this is the seam it plugs into, not a call that would raise on
+        # every delivery.
+        self.delivery = (
+            NotificationDelivery(self.notifications, ScreenNotificationSink(self.screen))
+            if self.notifications is not None
+            else None
+        )
         self.governor = self._build_governor()
         # Built last because it resolves through the session, which is what
         # supplies the permission mode the queue's `approve()` needs. Held
@@ -325,6 +349,11 @@ class NomadApp:
         governor = ResourceGovernor(self.bus, config=self._config.resources)
         for name in _INTERACTIVE_WORKLOADS:
             governor.register(InteractiveWorkload(name))
+        if self.delivery is not None:
+            # D38 names the notification queue as interactive by name. It is
+            # registered from the component so that the tier describes
+            # something that is actually running.
+            governor.register(InteractiveWorkload(self.delivery.name))
         if self.intent_ledger is not None:
             # The only opportunistic workload the device has: it drafts skills
             # from repeated misses and parks the instant a turn starts.
@@ -448,6 +477,12 @@ class NomadApp:
         # up before the session can publish a turn — and both must still be up
         # while the session stops.
         components.extend([self.renderer, self.authprompt, self.input])
+        if self.delivery is not None:
+            # After the migrations that create its table and after the
+            # authorization prompt, so that a notification arriving during a
+            # pending authorization finds the screen already claimed and
+            # defers rather than racing it.
+            components.append(self.delivery)
         if self.governor is not None:
             # After the database (its one opportunistic workload reads the
             # ledger) and before the session, so it is already subscribed when

@@ -24,6 +24,13 @@ Dropping is safe for the renderer specifically because of the property F1
 already relies on: `agent.turn_finished` is authoritative and redraws the whole
 answer (D6). A pending authorization only ever exists *inside* a turn, so every
 suppressed frame is followed by a full, correct redraw.
+
+**A notification is the writer for which dropping is not safe**, and it is why
+`claim_if_free()` exists. Nothing redraws a fired timer: a suppressed frame
+there is a promise the device made and then quietly did not keep. So that
+writer does not take its chances with `draw()` — it asks for the screen, is
+told no while a prompt is up, and leaves its row `PENDING` for the next poll
+(`notifications/delivery.py`).
 """
 
 from __future__ import annotations
@@ -111,17 +118,25 @@ class ScreenOwner:
         """A handle for one named writer. Handing these out is the whole API."""
         return ScreenView(self, writer)
 
-    async def draw(self, writer: str, draw: Draw) -> None:
-        """Draw, unless someone else holds the screen."""
+    async def draw(self, writer: str, draw: Draw) -> bool:
+        """Draw, unless someone else holds the screen. True if it landed.
+
+        `ScreenView` discards the answer, because a writer that can be
+        suppressed must not be able to tell (that is what keeps the
+        arbitration in one place). It is returned for the callers that are not
+        writers — a notification sink has to know whether the frame reached the
+        glass before it may mark a durable row delivered.
+        """
         if self._suppress(writer):
-            return
+            return False
         async with self._draw_lock:
             # Re-checked under the lock: a frame that queued behind another
             # writer's draw may find the screen claimed by the time it runs,
             # and the claim has to win in that case too.
             if self._suppress(writer):
-                return
+                return False
             await draw(self._display)
+            return True
 
     def _suppress(self, writer: str) -> bool:
         holder = self._holder
@@ -144,3 +159,29 @@ class ScreenOwner:
             finally:
                 self._holder = None
                 logger.info("Screen released", extra={"writer": writer})
+
+    @contextlib.asynccontextmanager
+    async def claim_if_free(self, writer: str) -> AsyncIterator[ScreenView | None]:
+        """Take the screen, or yield `None` rather than waiting for it.
+
+        `exclusive()` waits, because the thing that claims the screen is an
+        authorization prompt and refusing to draw one is the failure D36 exists
+        to fix. A notification is the opposite case: it is durable, it is not a
+        question, and the operator is in the middle of answering something
+        else. Waiting would put it on the glass the instant the prompt resolves
+        — over the "Approved" or "Denied" confirmation, which is the same bug
+        one frame later. So it declines, and the caller retries from the row
+        that is still `PENDING`.
+
+        The check-then-claim is atomic despite the two statements: neither
+        `locked()` nor an uncontended `Lock.acquire()` suspends, so no other
+        task can run between them on the one loop D1 gives us.
+        """
+        if self._holder is not None or self._claim_lock.locked():
+            logger.debug(
+                "Screen claim declined", extra={"writer": writer, "holder": self._holder}
+            )
+            yield None
+            return
+        async with self.exclusive(writer) as view:
+            yield view

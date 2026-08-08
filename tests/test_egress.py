@@ -7,6 +7,8 @@ ambiguous therefore resolves away from `LOCAL`.
 
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from nomad.tools.egress import Egress, classify, classify_params
@@ -73,3 +75,86 @@ def test_a_non_string_command_is_unclassifiable_not_local() -> None:
     """The bridge routes before the params model validates; it must not guess."""
     assert classify_params({"command": ["ssh", "prod"]}) is Egress.UNCLASSIFIABLE
     assert classify_params({"command": None}) is Egress.UNCLASSIFIABLE
+
+
+# -- wrapped commands (the third adversarial review) -------------------------
+#
+# `bash -c "ssh prod rm -rf /"` tokenises to three tokens, the third of which
+# is a whole command wearing one pair of quotes. The scan saw no `ssh` and
+# answered LOCAL — D27's bypass, reopened by one level of quoting.
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'bash -c "ssh prod rm -rf /"',
+        "sh -c 'ssh prod uptime'",
+        'eval "ssh prod uptime"',
+        'su -c "ssh prod uptime" root',
+        'env FOO=1 sh -c "ssh prod uptime"',
+        "sh -c \"sh -c 'ssh prod uptime'\"",
+        "bash <<EOF\nssh prod uptime\nEOF",
+    ],
+)
+def test_a_command_wrapped_in_a_shell_is_still_remote(command: str) -> None:
+    assert classify(command) is Egress.REMOTE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A language this module has no business parsing.
+        "python -c \"import os; os.system('ssh h')\"",
+        'python3 -c "print(1)"',
+        'perl -e "system(q{ssh h})"',
+        'node --eval "require(\'child_process\')"',
+        # The text that will run has not been written yet.
+        "$(echo ssh) prod",
+        "echo `ssh prod uptime`",
+        "diff <(ssh a cat x) y",
+        # An unreadable inner command is unreadable at any depth.
+        'bash -c "echo \\"unbalanced"',
+    ],
+)
+def test_a_command_it_cannot_read_is_never_local(command: str) -> None:
+    assert classify(command) is Egress.UNCLASSIFIABLE
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Read, not guessed: this is what keeps the rule from denying every
+        # wrapped-but-innocuous command, which on a device with no SSH target
+        # registered would be a refusal to work rather than a prompt.
+        'bash -c "ls -la /tmp"',
+        "sh -c 'git status'",
+        # `python` without an inline-code flag runs a file, which is no more
+        # opaque than any other binary.
+        "python -m pytest -q",
+        "python script.py --ssh-config /etc",
+        # Not a wrapper, so its quoted argument is a string and stays one.
+        'git commit -m "fix the ssh bug"',
+        "cd $HOME && ls",
+    ],
+)
+def test_a_readable_wrapped_command_is_still_local(command: str) -> None:
+    assert classify(command) is Egress.LOCAL
+
+
+def test_remote_beats_unreadable_at_any_depth() -> None:
+    """"I found ssh" is never downgraded to "I cannot tell"."""
+    assert classify('python -c "x" ; ssh prod uptime') is Egress.REMOTE
+    assert classify('bash -c "ssh h" -c "python -c 1"') is Egress.REMOTE
+
+
+def test_nesting_is_bounded_and_the_bound_fails_closed() -> None:
+    """Past the depth limit the answer is "cannot tell", never "local".
+
+    Wrapping is unbounded and the reader is not, so the bound has to be a
+    verdict rather than a silent stop. Buried far enough down, an `ssh` this
+    module can no longer reach must still not read as a local command.
+    """
+    buried = "ssh prod uptime"
+    for _ in range(5):
+        buried = f"sh -c {shlex.quote(buried)}"
+    assert classify(buried) is Egress.UNCLASSIFIABLE

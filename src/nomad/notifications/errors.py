@@ -18,3 +18,16 @@ class NotificationRefused(NomadError):
     queue cannot parse, or a transition out of a state that is already
     terminal.
     """
+
+
+class NotificationDeferred(NomadError):
+    """A sink could not show this one *yet*, and the row must stay pending.
+
+    Raised rather than returned because `deliver_due` marks a row delivered
+    exactly when the sink returns normally (see `queue.py`). A sink that
+    swallowed "the screen is busy" and returned would consume the reminder
+    without ever showing it — which is precisely the silent-promise-breaking
+    this whole path exists to fix. Distinct from `NotificationRefused` because
+    nothing is wrong: the answer is "again in a moment", and it is expected
+    every time an authorization prompt is on the glass.
+    """
