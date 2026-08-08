@@ -13,36 +13,41 @@ Read this first after a compaction.
 companion. Claude Code is the agent loop *today*, behind a swappable interface,
 with a local LLM over Tailscale as the eventual backend (D19, D24).
 
-**Where things stand:** branch `main`. `core`, `storage`, `targets`, `tools`
-(the whole permission pipeline), `agent/`, `mcp/`, and now `protocol/`,
-`hardware/`, `input/` and `memory/` are built and green — **431 tests passing,
-ruff clean**, verified by the coordinating session rather than self-reported.
-Chunks A–D, G, G2, E1, E2, E3 and M are DONE.
+**Where things stand:** branch `main`, **654 tests passing, ruff clean**,
+verified by the coordinating session rather than self-reported. Chunks A–D, G,
+G2, E1–E3, M, F1, F2, **V, R, N, U and S** are DONE. Only **O** remains of the
+2026-08-08 goal, then F3 (HTTP API, README, prompt wiring), P, I and H.
 
-**No hardware is wired up yet, and that is the plan.** The entire stack is built
-and tested against mock drivers; the screen, buttons, joystick, RP2040 and
-PiSugar get soldered on in a later session, once the software is ready. Nothing
-in the suite needs a serial port, a credential or a pin. `HeadlessDisplay`
-exists so the parts that draw can still be watched while that is true.
+**Hardware, verified on the device 2026-08-08 — not assumed.** With the Pi
+powered up, `lsusb` and ALSA say:
 
-**Next action:** chunk V (voice), then R, N, U, S, O — see the ordering note
-under the chunk table for why that order and not another. One thing a brief for
-N must carry, because it is not inferable: notifications must be durable rows,
-since `EventBus` drops slow subscribers by design (D6) and the screen is off
-most of the time. M closed the other one — rollover carries distilled memory
-forward (D34), because the Claude Code transcript is *not* storage Nomad
-controls.
+- **The microphone is real and it works.** A C-Media USB capture device
+  (`08bb:2902`, ALSA card 1). A two-second capture returned 32000 frames at
+  16 kHz with peak 1949 / RMS 281 — signal, not silence. Output is the Pi's own
+  3.5 mm jack (card 0).
+- **The ESP32-S3 is not on the Pi's USB bus at all.** No Espressif VID, no
+  `/dev/ttyACM*`. It is powered and running its *factory demo*, so it is not
+  speaking D30's wire format either. USB-C carries data only if the cable, the
+  port and the firmware all cooperate; here at least one does not.
+- **The Pi has no fans yet.** It reads cool only because it had been off. Do
+  not put sustained load on it, and note that D38's governor currently
+  arbitrates for contention, not for heat — on an unfanned Pi 4 thermal
+  throttling is a second, unmodelled reason for background work to yield.
 
-**Hardware as of 2026-08-08, from the operator:** the Pi is powered down while
-fans are fitted — it ran hot. The ESP32-S3 touchscreen module is connected by
-USB-C, powered, and **showing its factory demo**, which means stock firmware,
-not firmware speaking D30's wire format. So the panel is present but not yet
-addressable: real touch input needs a firmware flash, and that flash needs the
-Pi back up. Nothing in V–O depends on either, because the whole stack is built
-against mock drivers by design (D9). Record the module's exact part number in
-`ARCHITECTURE.md` before writing firmware — resolution, touch controller and
-USB-serial bridge all follow from it, and guessing any of the three wastes a
-flash cycle.
+This is why the whole stack is built against mock drivers (D9): none of the
+above blocked a single chunk. What it *does* change is that the real ALSA
+`Recorder`/`Speaker` are now worth writing against a device known to work,
+where chunk V deliberately left `alsa`/`whisper`/`piper` as named-but-
+unimplemented seams.
+
+**Next action:** finish **O** (the offline tier — its four constraints are
+below and they are the spec), then the independent adversarial review the
+operator set as the completion criterion. After that, in rough value order:
+inject `SkillLibrary.render_index()` into the prompt and ship seed skills
+(neither is wired — see the S note), the real ALSA drivers, then getting the
+panel addressable (plug it into the Pi, flash D30 firmware), which matters
+because touch is the stated interface and that panel is the only input hardware
+that exists.
 
 **Chunk O — the offline tier — is the operator's call, recorded here so the
 constraints are not relearned.** The device is a brick without network today,
@@ -67,12 +72,28 @@ never pay a round trip to a datacentre. Four constraints the brief must carry:
    whether it is authorized. An offline fast path that skips the broker would
    undo the entire security layer at exactly the moment nobody is watching.
 
-**Machine constraints, learned the hard way:** 2 CPUs, ~3.8 GB RAM. One subagent
-at a time, never two heavy commands at once, and run tests as
-`nice -n 19 .venv/bin/python -m pytest <files> -q -p no:cacheprovider` — no
-xdist, no type-checker. Two subagents have now run out of budget mid-chunk and
-left tests unwritten; **always verify a subagent's work yourself before marking
-a chunk DONE**, and keep briefs to one package.
+**Machine constraints, learned the hard way:** 2 CPUs, ~3.8 GB RAM, and the
+operator has had this laptop freeze. **One subagent at a time** (the operator's
+standing rule: one `deep-implementer`, which may itself use up to two lower-tier
+agents). Never two heavy commands at once. **Always wrap test runs in
+`timeout`** — an unbounded hang costs the whole window:
+
+```
+timeout 300 nice -n 19 .venv/bin/python -m pytest <files> -q -p no:cacheprovider
+```
+
+No xdist, no type-checker. Beware `pkill -f "python -m pytest"` — the pattern
+matches the invoking shell and kills it.
+
+**Three subagents have now reported success with tests red or unwritten.**
+Always re-run the verify command yourself before marking a chunk DONE; the last
+one left a nonexistent fixture name, three stale snapshot assertions and a lint
+error behind a "done". Keep briefs to one or two packages.
+
+**And read `git status` before writing into paths an interrupted agent owned.**
+A rejected or interrupted subagent has usually *already written files*. Chunk R
+was lost and had to be rebuilt because this session assumed otherwise and wrote
+straight over three of its modules.
 
 The `.venv` already has every current dependency plus `nomad` as an editable
 install.
