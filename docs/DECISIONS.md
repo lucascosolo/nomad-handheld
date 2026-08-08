@@ -213,6 +213,11 @@ Logical actions: `NAV_UP`, `NAV_DOWN`, `NAV_LEFT`, `NAV_RIGHT`, `CONFIRM`,
 `BACK`, `ACTION_1`, `ACTION_2`. Plus `PRESS`/`RELEASE`/`REPEAT` phases, because
 games need hold and menus need edge-triggered.
 
+**The action set is extensible, not fixed** (see D26). Core actions are always
+present; the system and apps may register additional actions — `ASSISTANT` being
+the obvious one. This is what makes "remap B to a dedicated AI button" a typed
+settings change rather than a code change.
+
 Physical → logical mapping lives in TOML. **No application code may reference a
 GPIO pin, a button index, or a raw key code.** UI and games subscribe to logical
 actions only.
@@ -322,13 +327,16 @@ failure mode has to be a clean park, not a corrupted partial write.
 
 ---
 
-## D19 — Claude Code is the agent loop, not a model behind it
+## D19 — Claude Code is the agent loop *today*, behind a swappable interface
 
-**Accepted. Supersedes the loop half of D11 and D16.**
+**Accepted. Supersedes the loop half of D11 and D16. Amended by D24 — read D24
+with this one; the backend is an implementation, not the architecture.**
 
 Nomad does not implement its own think→tool→observe loop. It runs **Claude Code
 headless** via the Python Agent SDK (`claude-agent-sdk`) and acts as the harness
-around it.
+around it. Claude Code is the *current* backend, reached through the `AgentBackend`
+interface in D24 — nothing outside `agent/backends/claude_cli.py` may import the
+SDK.
 
 ```
 Claude Code  ── the loop, the tools, compaction, web search, sub-agents
@@ -415,6 +423,128 @@ site scales and keeps one enforcement point.
 
 *Cost to change:* Low mechanically, high in consequence — this is the decision to
 revisit first if the device ever misbehaves.
+
+---
+
+## D24 — The agent backend is swappable; Claude Code is one implementation
+
+**Accepted. This constrains D19.**
+
+The long-term goal is to replace the cloud model with a **locally run LLM reached
+over Tailscale**. That is only cheap if nothing above the backend knows which
+backend is running.
+
+```python
+class AgentBackend(Protocol):
+    name: str
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    async def send(self, text: str, *, session_id: str) -> None: ...
+    def events(self) -> AsyncIterator[AgentEvent]: ...   # text, tool_call, usage, error
+    async def interrupt(self) -> None: ...
+```
+
+Planned implementations:
+
+| Backend | Status | Notes |
+|---|---|---|
+| `claude_cli` | Current | Claude Code headless via the Agent SDK, subscription auth (D20) |
+| `remote_llm` | Planned | An OpenAI/Anthropic-compatible endpoint on a workstation, reached over **Tailscale**. Nomad holds a tailnet address, not a public one. |
+| `mock` | Tests | No subprocess, no network |
+
+**Rules that make the swap cheap:**
+- `claude-agent-sdk` may be imported in **exactly one module**:
+  `agent/backends/claude_cli.py`. A test enforces this.
+- Backends emit Nomad's own `AgentEvent` types. No SDK type crosses the boundary.
+- The permission bridge (D21) sits **above** the backend, so gating is backend-
+  independent. A local model gets policed by the same broker.
+- Backend selected by config string, exactly like hardware drivers (D9).
+
+**The honest asymmetry, recorded so it is not a surprise:** Claude Code brings its
+own loop, tools, and compaction. A raw local LLM brings none of those, so
+`remote_llm` must supply a loop and a tool-execution path of its own — which is
+what Nomad's retired `agent/loop.py` did. Retiring it is right for now, but the
+`AgentBackend` interface must not assume the backend is agentic. Backends declare
+`capabilities: frozenset[BackendCapability]` (`OWN_LOOP`, `OWN_TOOLS`,
+`OWN_COMPACTION`), and Nomad supplies what the backend lacks.
+
+*Cost to change:* Low now. **High if D19 is implemented without it** — which is
+precisely why this decision exists.
+
+---
+
+## D25 — Self-upgrading means authoring *apps*, not editing core
+
+**Accepted. This is what "self-upgrading" actually means.**
+
+The target user experience:
+
+> "Make a Mario-style game I can play on your screen" → Nomad writes it, puts a
+> shortcut on the home screen, and launches it.
+
+That is **capability authoring**, and it must not touch Nomad's own source tree
+(D21 forbids it anyway). Apps are self-contained packages under
+`var/apps/<app_id>/`, outside the repo:
+
+```
+var/apps/brick-blaster/
+  manifest.toml     # id, name, version, icon, entry, requires, permissions
+  app.py            # entry point
+  assets/
+```
+
+`AppManifest` declares the logical input actions it consumes (D13), whether it
+needs full-screen display, and what permissions it wants. An app that does not
+declare a permission cannot use it.
+
+**Registration is gated, not automatic.** A newly authored app is validated
+before it appears on the home screen: manifest schema validates, module imports
+cleanly, declared entry point exists, and a smoke-launch survives N seconds. Fail
+any step and it is quarantined with the error surfaced — never registered.
+
+**Crash isolation:** apps run as supervised asyncio tasks with exception
+isolation and a watchdog; a crashing app returns the user to the home screen and
+must never take Nomad down. Subprocess isolation is the upgrade path if an app
+ever needs a hard memory boundary — the supervisor interface is designed so that
+swap does not change callers.
+
+Apps consume logical input actions only (D13) and draw through the display
+abstraction — never a GPIO pin, never the framebuffer directly. This is why D13
+is worth its cost: a self-authored game gets working controller input for free.
+
+*Cost to change:* Medium. The manifest is a contract with every app ever written.
+
+---
+
+## D26 — Nomad can reconfigure itself through a validated settings API
+
+**Accepted.**
+
+The second self-upgrade shape:
+
+> "Remap the B button to be a dedicated AI button."
+
+This is a **config mutation**, not a code change, and it must not be done by
+letting the model free-edit `nomad.toml`. A `SettingsService` exposes typed,
+validated mutations:
+
+- every change validates against the Pydantic config model before it is written
+- every change is persisted to an audit log with before/after and who asked
+- `revert(n)` undoes the last n changes
+- changes that require a restart are marked as such rather than silently ignored
+- writes go to `nomad.local.toml` (D8), never the committed defaults
+
+Input remapping specifically: the logical action set from D13 is **extensible**
+rather than fixed. Core actions (`NAV_*`, `CONFIRM`, `BACK`, `ACTION_1`,
+`ACTION_2`) are always present; the system and apps may register additional
+actions such as `ASSISTANT`. Remapping B to an AI button is then a legal, typed
+settings change rather than a special case.
+
+*Why this and not "let it edit the file":* an invalid TOML write bricks the device
+on next boot. Validation before write plus a revert path is the difference
+between a reconfigurable device and an unbootable one.
+
+*Cost to change:* Low.
 
 ---
 

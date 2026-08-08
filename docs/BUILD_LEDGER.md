@@ -11,13 +11,15 @@ recollection, and never re-dispatch a chunk marked DONE.
 | B | Remaining docs written against DECISIONS.md | `docs/ARCHITECTURE.md`, `docs/HARDWARE.md`, `docs/PROTOCOL.md`, `docs/ROADMAP.md` | files exist, no contradiction with D1–D18 | **DONE** |
 | C | Core: errors, logging, config, events, lifecycle, storage | `src/nomad/core/**`, `src/nomad/storage/**`, `tests/test_events.py`, `tests/test_config.py`, `tests/test_storage.py`, `tests/test_lifecycle.py` | `pytest tests/test_events.py tests/test_config.py tests/test_storage.py tests/test_lifecycle.py` | **DONE** |
 | D | Security layer: targets, tools, permissions, agent session | `src/nomad/targets/**`, `src/nomad/tools/**`, `src/nomad/agent/**`, `tests/test_tools.py`, `tests/test_permissions.py`, `tests/test_targets.py`, `tests/test_agent_loop.py` | `pytest tests/{test_targets,test_tools,test_permissions,test_agent_loop,test_workspace}.py` | **DONE** |
-| G | **PIVOT (D19–D21):** Claude Code SDK becomes the loop; broker becomes `can_use_tool`; hardware exposed as MCP | `src/nomad/agent/**` (rewrite), `src/nomad/tools/builtin/**` (retire fs tools), `src/nomad/mcp/**`, `tests/test_claude_client.py`, `tests/test_permission_bridge.py`, `tests/test_mcp_hardware.py` | `pytest tests/{test_claude_client,test_permission_bridge,test_mcp_hardware,test_permissions}.py` | TODO |
+| G | **PIVOT (D19–D21, D24):** swappable `AgentBackend`; Claude CLI backend; broker becomes `can_use_tool`; hardware as MCP | `src/nomad/agent/**` (rewrite), `src/nomad/tools/builtin/**` (retire fs tools), `src/nomad/mcp/**`, `tests/test_backend_*.py`, `tests/test_permission_bridge.py`, `tests/test_mcp_hardware.py` | `pytest tests/{test_backend_claude,test_permission_bridge,test_mcp_hardware,test_permissions}.py` | TODO |
+| I | **Self-upgrade (D25, D26):** app registry + manifest + supervisor; settings service with validation, audit, revert; extensible action set | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | E | Peripherals: protocol, transports, hardware, input | `src/nomad/protocol/**`, `src/nomad/hardware/**`, `src/nomad/input/**`, `tests/test_protocol.py`, `tests/test_hardware.py`, `tests/test_input.py` | `pytest tests/{test_protocol,test_hardware,test_input}.py` | TODO |
 | F | Wire-up: API, `__main__`, composition root, layering test, README | `src/nomad/api/**`, `src/nomad/app.py`, `src/nomad/__main__.py`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
 
-Ordering: A → B → C → D → **G** → E → F → H. Sequential only — this laptop cannot
-afford concurrent subagents (2 CPUs, ~1.8 GB free).
+Ordering: A → B → C → D → **G** → E → I → F → H. Sequential only — this laptop
+cannot afford concurrent subagents (2 CPUs, ~1.8 GB free). I needs E (apps draw
+to the display and consume logical input).
 
 **Chunk G supersedes part of D.** `agent/loop.py` and `agent/context.py` are
 retired by D19; the permission pipeline, targets and `core` all carry over intact.
