@@ -974,11 +974,13 @@ deltas and the input stream. Sharing it would make the screen stutter exactly
 when the operator speaks, and those are the two things that must both work
 during a prompt.
 
-So the ESP32-S3 firmware presents a **composite USB device**: CDC for D30's
-control protocol, and a separate **USB Audio Class** interface for sound. The
-Pi then sees an ordinary sound card, and audio bytes and control frames cannot
-starve each other because they are different endpoints. `protocol` never gains
-an audio message type.
+The design that satisfies this — *if audio ever moves onto the module* — is a
+**composite USB device**: CDC for D30's control protocol, and a separate **USB
+Audio Class** interface for sound. The Pi would then see an ordinary sound
+card, and audio bytes and control frames could not starve each other because
+they are different endpoints. No firmware presents this today; see the
+verified table below, which is what is actually wired. Either way `protocol`
+never gains an audio message type.
 
 Enforced mechanically rather than by memory: the `audio` package's entry in
 `tests/test_layering.py` **may not import `protocol`**. Audio has no route to

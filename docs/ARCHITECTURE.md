@@ -364,7 +364,9 @@ Roles and honest limits. **No part of this is required to develop or test**
 | Component | Role | Link to the Pi | Explicitly not |
 |---|---|---|---|
 | **Raspberry Pi 4 (4 GB)** | The brain. Linux, `AgentSession`, event bus, storage, all decisions. | — it *is* the host | Rendering pixels or injecting keystrokes itself |
-| **ESP32-S3** + touchscreen, joystick, 4 buttons, **mic and speaker** | Display, input and audio peripheral | USB CDC serial, 921600 baud (control) **+ a separate USB Audio Class interface** (sound, D37) | **A co-processor.** No application logic runs on it, and no speech is recognised or synthesised on it. Its microSD is not primary storage |
+| **ESP32-S3** + touchscreen, joystick, 4 buttons | Display and input peripheral | USB CDC serial, 921600 baud (control) | **A co-processor.** No application logic runs on it, and no speech is recognised or synthesised on it. Its microSD is not primary storage |
+| **USB microphone** (C-Media `08bb:2902`, ALSA card 1) | Capture only | Plugs into the Pi directly | On the ESP32, and on the control link. Audio never shares the 921600-baud line with framebuffer deltas (D37) |
+| **Pi 3.5 mm jack** (`bcm2835 Headphones`, ALSA card 0) | Playback | — it *is* the host | Anything the ESP32 provides today |
 | **RP2040-Zero** | USB HID keyboard/mouse into an external host | USB CDC serial, 115200 baud (control); USB HID (output) | Bidirectional. Output-only from the Pi's view |
 | **PiSugar S Plus** | Battery power and telemetry | I2C | A decision-maker. It reports numbers; D18 policy decides |
 

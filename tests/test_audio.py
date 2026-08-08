@@ -205,7 +205,12 @@ def test_no_mcp_package_module_can_reach_the_recorder_protocol() -> None:
     """
     from pathlib import Path
 
-    forbidden = {"Recorder", "MockRecorder"}
+    # `Recorder` is the type; `create_recorder_driver` is how this codebase
+    # actually obtains one, and `capture` is the only thing either is for.
+    # Banning the type alone left the hole shaped like the composition root's
+    # own idiom — a `listen` tool written in a hurry imports the factory, never
+    # the protocol, and would have sailed past a name-only check.
+    forbidden = {"Recorder", "MockRecorder", "create_recorder_driver", "capture"}
     mcp_dir = Path(voice_module.__file__).parent
     for path in sorted(mcp_dir.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -220,9 +225,9 @@ def test_no_mcp_package_module_can_reach_the_recorder_protocol() -> None:
                     (alias.name for alias in node.names if alias.name in forbidden), None
                 )
             assert referenced not in forbidden, (
-                f"{path}: reaches the Recorder driver — mcp/ must never open the "
-                "microphone (D37). Recording is reachable only from the "
-                "operator-held push_to_talk action."
+                f"{path}: reaches the recorder ({referenced!r}) — mcp/ must never "
+                "open the microphone (D37). Recording is reachable only from the "
+                "operator-held push_to_talk action, by any spelling."
             )
 
 
