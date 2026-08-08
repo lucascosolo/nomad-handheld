@@ -51,10 +51,41 @@ class StorageConfig(BaseModel):
     path: str = "var/nomad.db"
 
 
+class AgentBackendKind(StrEnum):
+    """Which implementation runs the loop (D24)."""
+
+    MOCK = "mock"
+    CLAUDE_CLI = "claude_cli"
+    REMOTE_LLM = "remote_llm"
+
+
+class ClaudeCliConfig(BaseModel):
+    """Claude Code headless backend (D19, D20).
+
+    The OAuth token is named here, never stored here.
+    """
+
+    cli_path: str = "claude"
+    expected_cli_version: str = "2.1.224"
+    oauth_token_env: str = "CLAUDE_CODE_OAUTH_TOKEN"
+    model: str = "claude-sonnet-5"
+
+
+class RemoteLlmConfig(BaseModel):
+    """A model on the tailnet (D24). Not implemented yet."""
+
+    base_url: str = ""
+    model: str = ""
+
+
 class AgentConfig(BaseModel):
+    backend: AgentBackendKind = AgentBackendKind.MOCK
     mode: PermissionMode = PermissionMode.MANUAL
     max_tool_calls_per_turn: int = 25
+    # Ignored by backends that declare OWN_COMPACTION (D24).
     compact_at: float = 0.75
+    claude_cli: ClaudeCliConfig = Field(default_factory=ClaudeCliConfig)
+    remote_llm: RemoteLlmConfig = Field(default_factory=RemoteLlmConfig)
 
 
 class WorkspaceConfig(BaseModel):
@@ -67,21 +98,19 @@ class ToolsConfig(BaseModel):
     command_timeout_seconds: int = 120
 
 
-class CloudConfig(BaseModel):
-    model: str = "claude-sonnet-5"
-    api_key_env: str = "ANTHROPIC_API_KEY"
+class AppsConfig(BaseModel):
+    """Self-authored apps (D25)."""
+
+    root: str = "var/apps"
+    smoke_test_seconds: int = 5
+    restart_on_crash: bool = False
 
 
-class LocalConfig(BaseModel):
-    enabled: bool = False
-    model_path: str = ""
+class SettingsConfig(BaseModel):
+    """Self-configuration (D26)."""
 
-
-class AiConfig(BaseModel):
-    provider: str = "mock"
-    routing: str = "static"
-    cloud: CloudConfig = Field(default_factory=CloudConfig)
-    local: LocalConfig = Field(default_factory=LocalConfig)
+    overrides_path: str = "nomad.local.toml"
+    audit_history: int = 100
 
 
 class DisplayConfig(BaseModel):
@@ -139,6 +168,9 @@ class InputJoystickConfig(BaseModel):
 
 
 class InputConfig(BaseModel):
+    # Registered in addition to the core action set, which is always present
+    # and cannot be removed (D13, D26).
+    extra_actions: list[str] = Field(default_factory=list)
     buttons: InputButtonsConfig = Field(default_factory=InputButtonsConfig)
     joystick: InputJoystickConfig = Field(default_factory=InputJoystickConfig)
 
@@ -150,7 +182,8 @@ class NomadConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    ai: AiConfig = Field(default_factory=AiConfig)
+    apps: AppsConfig = Field(default_factory=AppsConfig)
+    settings: SettingsConfig = Field(default_factory=SettingsConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     usb_hid: UsbHidConfig = Field(default_factory=UsbHidConfig)
     battery: BatteryConfig = Field(default_factory=BatteryConfig)

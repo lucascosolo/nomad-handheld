@@ -18,12 +18,54 @@ port = 8080
 path = "var/nomad.db"
 
 [agent]
+# Which agent backend runs the loop. (D24)
+#   mock       - no subprocess, no network. The default, so the whole system
+#                runs and tests on a laptop. (D9)
+#   claude_cli - Claude Code headless via the Agent SDK. (D19, D20)
+#   remote_llm - a model on the tailnet. Not implemented yet.
+backend = "mock"
 # Permission mode: manual | session | smart | auto  (D14)
 mode = "manual"
 # Turn budget before the loop parks and asks to continue.
 max_tool_calls_per_turn = 25
 # Context compaction triggers at this fraction of the model's window. (D16)
+# Applies only to backends that do NOT declare OWN_COMPACTION; claude_cli does,
+# so this is ignored while it is selected.
 compact_at = 0.75
+
+[agent.claude_cli]
+cli_path = "claude"
+# Flags are a compatibility surface (D20). Checked at boot; mismatch logs loudly
+# rather than failing, since a newer CLI usually still works.
+expected_cli_version = "2.1.224"
+# Subscription auth. This env var holds the `claude setup-token` result; the
+# token itself never appears in a config file. ANTHROPIC_API_KEY is actively
+# stripped from the child environment - if it is set, the CLI bills per token
+# instead of against the subscription. (D20)
+oauth_token_env = "CLAUDE_CODE_OAUTH_TOKEN"
+model = "claude-sonnet-5"
+
+[agent.remote_llm]
+# Planned (D24). A model on a workstation, reached over Tailscale - Nomad holds
+# a tailnet address, never a public one.
+base_url = ""
+model = ""
+
+# Self-authored apps. (D25)
+[apps]
+root = "var/apps"
+# A newly authored app must import cleanly and survive this long under a
+# smoke-launch before it is registered. Fail and it is quarantined, not listed.
+smoke_test_seconds = 5
+# Apps run as supervised asyncio tasks; a crash returns to the home screen.
+restart_on_crash = false
+
+# Self-configuration. (D26)
+[settings]
+# Validated mutations are written here, never to the committed defaults.
+overrides_path = "nomad.local.toml"
+# How many changes `revert(n)` can reach back through.
+audit_history = 100
 
 [workspace]
 # Filesystem tools are confined to this root. (D15)
@@ -36,18 +78,10 @@ follow_symlinks_outside_root = false
 enable_run_command = false
 command_timeout_seconds = 120
 
-[ai]
-provider = "mock"        # mock | cloud | local
-routing = "static"       # static | auto  (auto considers network + battery, D17)
-
-[ai.cloud]
-model = "claude-sonnet-5"
-# API key comes from the environment, never this file.
-api_key_env = "ANTHROPIC_API_KEY"
-
-[ai.local]
-enabled = false
-model_path = ""
+# NOTE: the old [ai] section is gone. Model selection is now backend selection
+# ([agent].backend, D24) and lives with the backend it belongs to. D17's routing
+# question - which model answers which request - is deferred until a second
+# backend actually exists to route between.
 
 [display]
 driver = "mock"          # mock | esp32
@@ -78,6 +112,14 @@ baudrate = 921600
 kind = "mock"            # mock | serial
 port = "/dev/ttyACM1"
 baudrate = 115200
+
+[input]
+# Logical actions beyond the core set. (D13, D26)
+# The core actions - NAV_UP/DOWN/LEFT/RIGHT, CONFIRM, BACK, ACTION_1, ACTION_2 -
+# are always present and cannot be removed. Anything listed here is registered
+# in addition, which is what makes "remap B to a dedicated AI button" a typed
+# settings change rather than a special case.
+extra_actions = ["ASSISTANT"]
 
 # Physical -> logical input mapping. (D13)
 # No application code may reference the left-hand side of these entries.

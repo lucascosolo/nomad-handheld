@@ -21,11 +21,14 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.4",
 ]
+# The Claude Code backend (D19, D24). Optional: the `mock` backend is the
+# default, so the suite runs with no CLI and no credentials. Imported by exactly
+# one module, `nomad/agent/backends/claude_cli.py`.
+agent = ["claude-agent-sdk>=0.2.132"]
 # Installed only on real hardware. Never a hard dependency: the whole system
 # runs and tests on a laptop with mock drivers.
 serial = ["pyserial-asyncio>=0.6"]
 camera = ["picamera2>=0.3"]
-anthropic = ["anthropic>=0.34"]
 
 [project.scripts]
 nomad = "nomad.__main__:main"

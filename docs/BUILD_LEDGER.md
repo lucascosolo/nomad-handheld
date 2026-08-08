@@ -7,7 +7,7 @@ recollection, and never re-dispatch a chunk marked DONE.
 
 | Chunk | Scope | Owns (paths) | Verify | Status |
 |---|---|---|---|---|
-| A | Foundation: pyproject, gitignore, CLAUDE.md, DECISIONS.md, nomad.toml, ledger | root files, `docs/DECISIONS.md` | files exist | **DONE** |
+| A | Foundation: pyproject, gitignore, CLAUDE.md, DECISIONS.md, nomad.toml, ledger | root files, `docs/DECISIONS.md`, `src/nomad/core/config.py` | `load_config()` parses `nomad.toml` under `extra="forbid"`; full `pytest` | **DONE** (re-closed post-pivot) |
 | B | Remaining docs written against DECISIONS.md | `docs/ARCHITECTURE.md`, `docs/HARDWARE.md`, `docs/PROTOCOL.md`, `docs/ROADMAP.md` | files exist, no contradiction with D1–D18 | **DONE** |
 | C | Core: errors, logging, config, events, lifecycle, storage | `src/nomad/core/**`, `src/nomad/storage/**`, `tests/test_events.py`, `tests/test_config.py`, `tests/test_storage.py`, `tests/test_lifecycle.py` | `pytest tests/test_events.py tests/test_config.py tests/test_storage.py tests/test_lifecycle.py` | **DONE** |
 | D | Security layer: targets, tools, permissions, agent session | `src/nomad/targets/**`, `src/nomad/tools/**`, `src/nomad/agent/**`, `tests/test_tools.py`, `tests/test_permissions.py`, `tests/test_targets.py`, `tests/test_agent_loop.py` | `pytest tests/{test_targets,test_tools,test_permissions,test_agent_loop,test_workspace}.py` | **DONE** |
@@ -33,6 +33,30 @@ departures from the original brief, all recorded in DECISIONS.md: persistent
 agent session (D11), target abstraction with SSH/HID stubs (D12), logical input
 layer (D13), Claude-Code-shaped permission modes (D14), and an explicit note that
 an Edge TPU cannot replace the cloud model (D17).
+
+**A — re-closed after the pivot.** The foundation files were written against
+D1–D18 and went stale the moment D19–D26 landed, so chunk A was DONE against a
+contract that no longer existed. Brought current before G starts, because G
+writes the backend that reads this config:
+
+- `pyproject.toml`: `anthropic` extra replaced by `agent = ["claude-agent-sdk>=0.2.132"]`.
+  Optional, because `mock` is the default backend and the suite must run with no
+  CLI and no credentials (D9, D24).
+- `nomad.toml` + `core/config.py`: added `[agent].backend` (`mock` default),
+  `[agent.claude_cli]` (cli path, pinned version, OAuth **env var name** — never
+  the token), `[agent.remote_llm]` (empty, tailnet placeholder), `[apps]` (D25),
+  `[settings]` (D26), `[input].extra_actions` (D26 — `ASSISTANT` is registered
+  config, not a special case).
+- **`[ai]` removed entirely.** `ai.provider` and `agent.backend` were two names
+  for one choice, and `ai.cloud.api_key_env = "ANTHROPIC_API_KEY"` pointed at the
+  exact variable D20 requires to be *unset*. Leaving it would have been a config
+  surface that bills per token by following its own documentation. D17's routing
+  question is deferred until a second backend exists to route between.
+
+`NomadConfig` is `extra="forbid"`, so the file and the model cannot drift apart
+silently — a stale key is a startup failure, not a silent default. Verified this
+session: `load_config()` returns the new fields, full suite **183 passed in
+62.74s**, ruff clean. No code referenced the removed `ai` config (grepped).
 
 **B — DONE.** Four docs written against D1–D18. The agent flagged three genuine
 gaps rather than inventing resolutions: the ESP32/RP2040 **message catalogue** and
