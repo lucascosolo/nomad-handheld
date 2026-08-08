@@ -76,6 +76,15 @@ class ToolSpec(BaseModel):
     #: scoped by destination host (D31) exactly as `path_params` scopes a file
     #: tool by location. A network tool with none still scopes as `net:`.
     url_params: tuple[str, ...] = ()
+    #: Confined to Nomad's *own* state — its screen and its memory. Auto-runs
+    #: in every mode, subordinate to `never_auto` (D35).
+    #:
+    #: Declared per tool rather than inferred, because the property being
+    #: claimed is "this leaves no mark outside the device and is reversible",
+    #: which no amount of path or risk inspection can establish. It is a
+    #: reviewer's assertion, and it belongs where a reviewer can see it.
+    #: Never set this on anything that reaches another machine.
+    device_local: bool = False
 
     def to_model_schema(self) -> dict[str, Any]:
         """The JSON-schema view handed to the model.

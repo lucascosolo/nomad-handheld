@@ -897,6 +897,70 @@ construct and cannot rebuild.
 
 ---
 
+## D35 — Nomad's own screen and memory are not the world
+
+On a stock device the model's first attempt to draw on its own screen hung for
+five minutes and then auto-denied. `display_card` is `Risk.MUTATING`, the
+default mode is `manual`, and mutating actions prompt — but the prompt is
+itself drawn with a display tool. **The device could not ask permission to ask
+permission.** `remember` had the same shape: Nomad asked to be allowed to
+remember something about its operator, through a prompt with no UI.
+
+`ToolSpec.device_local` marks a tool whose entire effect is confined to Nomad's
+own screen and its own memory, and such a tool auto-runs in every mode. It sits
+*after* `never_auto` and after the network check in `decide()`, so it can only
+widen the set of harmless local actions — a `device_local` flag mis-declared on
+an HID tool buys nothing, and there is a test asserting exactly that. It does
+not cover `DESTRUCTIVE`.
+
+The flag is **declared per tool, not inferred**. The claim being made is "this
+leaves no mark outside the device and is reversible", which no amount of path
+or risk inspection can establish. It is a reviewer's assertion and it belongs
+where a reviewer will see it.
+
+The deeper reason this is a security fix and not a convenience: a safety model
+whose observable behaviour on first boot is *hang, then refuse, having never
+asked* is indistinguishable from a broken device. It teaches the operator that
+`manual` is unusable and that the way to get work done is `auto` — and a
+guarantee that everyone turns off is worth nothing. Fail-closed has to stay
+affordable at the point of use or it decays into theatre.
+
+*Cost to change:* Low.
+
+---
+
+## D36 — The authorization prompt is not a tool (decided; built in chunk F)
+
+D35 removes the recursion for drawing. The prompt itself still needs an answer,
+and that raises the question D32 left open: what authorizes the UI that asks
+for authorization?
+
+**Nothing, because there is nothing to authorize.** The broker exists to gate
+*the model's* requests. An authorization prompt is Nomad's own I/O — Nomad
+initiates it, Nomad chooses its content, the model never asked for it. Running
+it through `can_use_tool` would be asking the model's gatekeeper to approve the
+gatekeeper's own question.
+
+So the rule is not "privileged tool" but **not a tool**: the prompter handle is
+held by the authorization queue's wiring and is never registered in
+`ToolRegistry`, so no `can_use_tool` path can reach it. A privileged *grant*
+type would be strictly worse — it would create a grant kind that exists in the
+vocabulary, and therefore one the model can learn to ask for.
+
+Two constraints that come with it, because this path draws while holding
+model-supplied data:
+
+- **The prompt renders structured fields only** — tool name, target, scope,
+  risk — each escaped and truncated. Never free-form model text. Otherwise the
+  parameters become a phishing surface on which the model composes its own
+  approval screen.
+- **A timeout still denies** (D21). Making the prompt visible changes what the
+  operator sees, never what silence means.
+
+*Cost to change:* Moderate once F wires it; low today.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

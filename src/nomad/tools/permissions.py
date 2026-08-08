@@ -593,6 +593,29 @@ class PermissionBroker:
                 spec=spec,
             )
 
+        # --- Nomad's own screen and memory are not the world (D35) ---------
+        # This sits *after* never_auto and after the network check, so it can
+        # only ever widen the set of harmless local actions.
+        #
+        # The deadlock it breaks: `display_card` is MUTATING, so in the
+        # default `manual` mode the model's first attempt to draw on its own
+        # screen parked for 300s and auto-denied. The prompt it was waiting on
+        # is itself drawn with a display tool, so the device could not ask for
+        # permission to ask for permission. A safety model whose observable
+        # behaviour on a stock boot is "hang, then refuse, having never asked"
+        # is indistinguishable from a broken device, and it teaches the
+        # operator to switch to `auto` — which is how a real guarantee dies.
+        if spec.device_local and spec.risk is not Risk.DESTRUCTIVE:
+            return await self._finalize(
+                request,
+                mode,
+                scope,
+                DecisionOutcome.ALLOW,
+                "confined to Nomad's own screen and memory",
+                spec=spec,
+                grant_source=GrantSource.AUTO,
+            )
+
         # --- read-only inside the workspace auto-runs in all modes (D15) ---
         # `source_tree` is included: D21 forbids *writing* to Nomad's own
         # source, not reading it, and a device that has to be asked before it

@@ -63,6 +63,7 @@ class RememberTool:
 
     spec = ToolSpec(
         name="remember",
+        device_local=True,
         description=(
             "Remember one small fact about your operator or their work so it "
             "survives this session. Pin only what shapes every conversation."
@@ -157,6 +158,7 @@ class ForgetTool:
 
     spec = ToolSpec(
         name="forget",
+        device_local=True,
         description=(
             "Forget a stored memory by id, when it has gone stale or wrong. "
             "Reversible — the record is kept, only hidden from recall."

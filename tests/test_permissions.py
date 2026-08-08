@@ -110,6 +110,56 @@ class TypeTextTool:
         return ToolResult.success("typed")
 
 
+class DrawTool:
+    """Stands in for `display_card`: mutating, but only to Nomad's own face."""
+
+    spec = ToolSpec(
+        name="draw",
+        description="Test-only device-local draw.",
+        params_model=TypeTextParams,
+        risk=Risk.MUTATING,
+        permissions=frozenset(),
+        required_capabilities=frozenset(),
+        device_local=True,
+    )
+
+    async def execute(self, params: TypeTextParams, ctx: ToolContext) -> ToolResult:
+        return ToolResult.success("drew")
+
+
+class DeviceLocalHidTool:
+    """A deliberately wrong declaration: `device_local` on a tool that types
+    on another machine. The point is that the broker does not believe it."""
+
+    spec = ToolSpec(
+        name="draw_but_hid",
+        description="Test-only mis-declaration.",
+        params_model=TypeTextParams,
+        risk=Risk.EXTERNAL_DEVICE,
+        permissions=frozenset({Permission.HID_OUTPUT}),
+        required_capabilities=frozenset({Capability.HID_OUTPUT}),
+        device_local=True,
+    )
+
+    async def execute(self, params: TypeTextParams, ctx: ToolContext) -> ToolResult:
+        return ToolResult.success("typed")
+
+
+class DeviceLocalDestroyTool:
+    spec = ToolSpec(
+        name="wipe_memory",
+        description="Test-only destructive device-local action.",
+        params_model=TypeTextParams,
+        risk=Risk.DESTRUCTIVE,
+        permissions=frozenset(),
+        required_capabilities=frozenset(),
+        device_local=True,
+    )
+
+    async def execute(self, params: TypeTextParams, ctx: ToolContext) -> ToolResult:
+        return ToolResult.success("wiped")
+
+
 # -- fixtures ---------------------------------------------------------------
 
 
@@ -152,6 +202,9 @@ def _make_pipeline(
     tools.register(ProbeWriteTool())
     tools.register(DestroyTool())
     tools.register(TypeTextTool())
+    tools.register(DrawTool())
+    tools.register(DeviceLocalHidTool())
+    tools.register(DeviceLocalDestroyTool())
 
     targets = TargetRegistry()
     targets.register(LocalTarget())
@@ -387,6 +440,42 @@ async def test_mutating_action_auto_runs_in_auto_mode(pipeline: Pipeline) -> Non
         pipeline.request("write_file", path="new.txt", content="x"), PermissionMode.AUTO
     )
     assert decision.outcome is DecisionOutcome.ALLOW
+
+
+# -- Nomad's own screen and memory are not the world (D35) -----------------
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_drawing_on_its_own_screen_never_prompts(
+    pipeline: Pipeline, mode: PermissionMode
+) -> None:
+    """The deadlock this closes: `display_card` is MUTATING, so in `manual`
+    the device parked 300s waiting for a prompt it could only have drawn with
+    a display tool. It could not ask permission to ask permission."""
+    decision = await pipeline.broker.decide(pipeline.request("draw", text="hi"), mode)
+    assert decision.outcome is DecisionOutcome.ALLOW
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_device_local_never_beats_never_auto(
+    pipeline: Pipeline, mode: PermissionMode
+) -> None:
+    """A mis-declared `device_local` on an HID tool must not buy anything.
+    The flag widens harmless local actions; it is not an override."""
+    decision = await pipeline.broker.decide(
+        pipeline.request("draw_but_hid", target="hid", text="rm -rf /"), mode
+    )
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_device_local_does_not_cover_destructive(
+    pipeline: Pipeline, mode: PermissionMode
+) -> None:
+    decision = await pipeline.broker.decide(pipeline.request("wipe_memory", text="all"), mode)
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True
 
 
 # -- session grants are keyed on (tool, target, scope) (D14) ---------------

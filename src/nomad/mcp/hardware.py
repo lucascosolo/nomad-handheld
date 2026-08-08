@@ -168,6 +168,7 @@ class DisplayTextTool:
 
     spec = ToolSpec(
         name="display_text",
+        device_local=True,
         description="Show a short message on Nomad's built-in screen.",
         params_model=DisplayTextParams,
         # Mutating rather than read-only: it changes what the user sees, and a
@@ -210,6 +211,7 @@ class DisplayCardTool:
 
     spec = ToolSpec(
         name="display_card",
+        device_local=True,
         description=(
             "Show a titled card on Nomad's screen: a short body plus optional "
             "key/value rows. The default way to answer."
@@ -249,6 +251,7 @@ class DisplayListTool:
 
     spec = ToolSpec(
         name="display_list",
+        device_local=True,
         description="Show a titled list of items on Nomad's screen, optionally selectable.",
         params_model=DisplayListParams,
         risk=Risk.MUTATING,
@@ -288,6 +291,7 @@ class DisplayChoiceTool:
 
     spec = ToolSpec(
         name="display_choice",
+        device_local=True,
         description=(
             "Ask the operator a question on Nomad's screen with 2-4 options they "
             "can answer with a joystick."
