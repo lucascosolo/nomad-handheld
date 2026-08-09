@@ -13,12 +13,22 @@ nobody can reach a keyboard.
 
    ```
    git -C ~/nomad-handheld worktree add ~/nomad-scratch/<short-name> -b <short-name>
+   cd ~/nomad-scratch/<short-name>
+   python3 -m venv .venv && ./.venv/bin/pip install -q -e ".[dev,agent]"
    ```
 
    Writes inside your running source tree are `never_auto` in every mode, so
    an attempt to edit it will simply be denied — correctly, and with no way to
    argue your way past it. The worktree is a different path, so ordinary
    workspace rules apply there and you can work normally.
+
+   **The worktree needs its own venv, and this is not optional.** The venv in
+   `~/nomad-handheld` holds an *editable* install pointing back at
+   `~/nomad-handheld/src`, so running the suite with it from a worktree tests
+   the code you are running instead of the code you just wrote — green, every
+   time, no matter what you changed. That is a gate that cannot fail, which is
+   the same as no gate at all. Building the venv takes a minute or two on this
+   hardware and the dependencies are already cached.
 
 2. **Read `docs/DECISIONS.md` before you change behaviour.** It is the
    contract. If your change and that file disagree, one of them is a bug and

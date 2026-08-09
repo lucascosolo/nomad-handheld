@@ -64,6 +64,46 @@ skill: scratch worktree (D22), suite as the gate, promotion is the operator's
 call. Committed under `firmware/` rather than left untracked — an interrupted
 agent's writes on disk are how chunk R was lost once already.
 
+**A hole in D21, found by booting the backend rather than reading it.** The
+SDK warns on every connect:
+
+```
+CanUseToolShadowedWarning: can_use_tool will not be invoked for: Skill.
+An allowed_tools entry that allows a whole tool auto-approves it before the
+callback is consulted.
+```
+
+`[agent.claude_cli].skills = "all"` becomes an allow-rule, and an allow-rule
+settles the call *before* `can_use_tool` fires. So CLAUDE.md's "every Claude
+Code tool call routes through `can_use_tool` into Nomad's broker" is not true
+today for the `Skill` tool. The exposure is bounded — a Claude Code skill is
+instructions, and anything it then does (`Bash`, writes, network) still hits
+the bridge — but a documented non-negotiable that is quietly false is worse
+than a known gap, so it is written down here rather than left in a log line.
+
+Two fixes, and choosing between them is a real trade the operator should make:
+a **PreToolUse hook**, which keeps `skills = "all"` and therefore keeps the
+parity with laptop Claude Code that D19 exists for; or **narrowing the entry**,
+which restores the invariant by removing capability — the exact move D21 says
+was never the thing to do. The hook is the right answer and it is its own
+chunk, with tests that prove a shadowed call is refused.
+
+**The D22 gate was walked end to end on the device, not assumed.** A worktree
+at `~/nomad-scratch/proving-the-gate` with its own venv imported
+`~/nomad-scratch/proving-the-gate/src/nomad`, ran 853 tests in 55s, went red
+when a line was deliberately broken, and left `~/nomad-handheld` clean
+throughout. **The worktree needs its own venv and that is load-bearing:** the
+running tree's venv holds an editable install pointing at
+`~/nomad-handheld/src`, so testing a worktree with it tests the code you are
+running rather than the code you just wrote — green every time, whatever you
+changed. A gate that cannot fail is not a gate. The `improving-yourself` skill
+now says so.
+
+**And it caught a bad test of its own**, which is the best evidence it works:
+`test_an_installed_but_unauthenticated_cli_is_not_ready` went through the full
+probe and so depended on whether a real CLI happened to be on `PATH` — green on
+the laptop, red on the device. Now asserted against `_auth_source` directly.
+
 **Recorded, and explicitly not to be worked on yet:** the long arc is replacing
 external model calls with work done onboard or on the operator's VPS. Chunk O
 is the shape it takes. The operator has said plainly that it is a roadmap item

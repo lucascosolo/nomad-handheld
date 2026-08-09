@@ -25,6 +25,7 @@ from nomad.core.config import NomadConfig
 from nomad.core.lifecycle import ComponentState
 from nomad.status import (
     STATUS_WRITER,
+    _auth_source,
     collect_status,
     probe_backend,
     render_status_json,
@@ -169,6 +170,13 @@ async def test_an_installed_but_unauthenticated_cli_is_not_ready(
     `Not logged in · Please run /login` — the exact shape of failure this
     module exists to prevent, found by running the probe against a real device
     rather than by reading it.
+
+    Asserted against `_auth_source` rather than through `probe_backend`,
+    deliberately. The first version of this test went through the whole probe
+    and so depended on whether a real CLI happened to be on `PATH` — it passed
+    on the laptop, where one is, and failed on the device, where a
+    non-interactive shell has no `~/.local/bin`. A test whose result depends on
+    the machine it runs on cannot be the gate D22 needs it to be.
     """
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
@@ -176,14 +184,12 @@ async def test_an_installed_but_unauthenticated_cli_is_not_ready(
     monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
-    config = _config(tmp_path, agent={"backend": "claude_cli"})
-    health = await probe_backend(config)
-    assert health.auth == "none"
-    assert health.ready is False
+    cli = _config(tmp_path).agent.claude_cli
+    assert _auth_source(cli) == "none"
 
     # And the credential file itself is what flips it.
     (home / ".claude" / ".credentials.json").write_text("{}")
-    assert (await probe_backend(config)).auth == "cli-credentials"
+    assert _auth_source(cli) == "cli-credentials"
 
 
 async def test_the_probe_never_reports_an_api_key_as_the_credential(
