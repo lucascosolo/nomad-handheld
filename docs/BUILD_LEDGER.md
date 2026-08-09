@@ -9,6 +9,40 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (later) — a press crosses the cable, and the screen is reachable
+
+**`InputRouter` exists and is wired** (`src/nomad/input/router.py`).
+`InputStream.feed_button`/`feed_joystick`/`feed_touch` were written, tested,
+and called by nothing outside their own package — the mapper and the prompter
+were both green with no join between them, so a device with a panel attached
+could draw a question and not receive the answer. The router is a component
+(it owns a task for the device's lifetime) and is **the single consumer of
+`Link.messages()`**: one inbox queue, so a second iterator steals every other
+press. Unknown types are counted and dropped; a malformed payload costs one
+message, not the reader task. `tests/test_input_router.py` runs across the
+seam — framed bytes in at the transport, an `InputAction` out of the stream.
+
+**The view is remote by default, gated by a token (D40).** `[view].remote`
+defaults on, the bind is a wildcard, and `var/view-token` (0600, minted on
+first start, survives restarts) is what authorizes every request — reads
+included. `ScreenServer` refuses a non-loopback bind without one; the app never
+hands it a host without one. The token reaches a browser once as `?token=` and
+moves into an `HttpOnly; SameSite=Strict` cookie. `url` never carries it,
+`login_url` does, and only `nomad status` prints that. Verified from the laptop
+against the running Pi: 401 bare, 200 with the token. The Pi is on the tailnet,
+so this is reachable from anywhere the operator is signed in — which is the
+point, and also why the token is not optional.
+
+Suite: 870 passed. Deployed to the Pi and the service restarted.
+
+**Still open, in priority order:** the mode selector (manual / smart / auto)
+the operator asked for; a reviewable `CommandPolicy` so Nomad can run his own
+suite without a prompt per command (`Bash` is `never_auto`, which is what
+blocks unattended self-improvement today); the D21 `Skill` shadowing hole; and
+making a *tap* select a choice option — the firmware owns layout, so it should
+report which option was hit over a new message type rather than the Pi
+duplicating geometry (D13 forbids synthesizing navigation from touch).
+
 ### 2026-08-09 — Nomad is on the Pi, and can be spoken to
 
 **The device is deployed and running its own code.** `~/nomad-handheld` on
