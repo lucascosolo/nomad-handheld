@@ -50,19 +50,52 @@ What landed with it:
    the laptop it was written on and failed on the device every single run.
    Now free ticks first, then a real wall-clock deadline.
 
-**The panel is not flashed.** New since the last entry: the ESP32-S3 *is* now
-on the Pi's USB bus (`303a:1001`, `/dev/ttyACM0`, and `nomad` is in `dialout`),
-which the previous entry said it was not. But a read of that port volunteers
-nothing, and a `system.hello` sent with Nomad's own framer gets no answer —
-and `firmware/nomad_face` answers `system.hello` on purpose. So the sketch has
-never been successfully flashed, or is not running. `arduino-cli` is installed
-on the Pi with `esp32:esp32@3.3.11`, so the device can flash itself.
+**The panel was not flashed** when this entry was first written — the ESP32-S3
+had appeared on the Pi's USB bus (`303a:1001`, `/dev/ttyACM0`, `nomad` in
+`dialout`) but answered no `system.hello`. It is flashed now; see the chunk W
+entry below. The firmware was committed under `firmware/` rather than left
+untracked, because an interrupted agent's writes on disk are how chunk R was
+lost once already.
 
-**Chunk W is Nomad's own first job.** The operator's instruction is that the
-touchscreen MVP is what he works on first, using the `improving-yourself`
-skill: scratch worktree (D22), suite as the gate, promotion is the operator's
-call. Committed under `firmware/` rather than left untracked — an interrupted
-agent's writes on disk are how chunk R was lost once already.
+### Chunk W is DONE — the panel is Nomad's face
+
+Flashed from the Pi itself with `arduino-cli`, settings measured rather than
+guessed (esptool: 16MB flash, 8MB octal PSRAM → `FlashSize=16M,PSRAM=opi`, plus
+the `CDCOnBoot=cdc,USBMode=hwcdc` the sketch's own header warns about). The
+panel now renders Nomad's status card, mirrored to the browser view, with
+`driver = "esp32"` and `mirror = ["headless"]`.
+
+Four things worth not relearning, all found by running it:
+
+1. **`pip install -e ".[serial]"` is required on the device** and nothing said
+   so until the boot failed. It failed *correctly* — the error names the exact
+   command — but the deploy step should install it.
+2. **Rotation is 3, not 1.** Rotation 1 is upside down once the board is in its
+   case. Which way is up depends on the mounting, and no controller register
+   knows that. Touch follows automatically; `setRotation` transforms both.
+3. **Opening the serial port resets the board.** DTR/RTS is the ESP32 reset
+   line and pyserial asserts it on open, so the panel restarts *because* Nomad
+   connected, and comes back after the one-shot boot card was already sent.
+   Every layer reported success and the glass said "waiting for the Pi". A
+   redraw on D30's reboot detection does not cover it — on a first connect both
+   sides are at `seq` zero, so there is no backwards step to detect. Fixed with
+   one deliberate second draw after a settle delay, and the reboot redraw kept
+   for unplug/replug.
+4. **The prompter is now `InputChoicePrompter`.** With the panel primary, an
+   authorization question is answered on the glass rather than in a browser
+   tab — which is the operator's stated want: Nomad asks yes/no on the
+   touchscreen. **Not yet true, and the next real gap:** nothing routes the
+   link's `input.touch` messages into `InputStream`, so `feed_*` still has no
+   caller outside its own package. Until that is wired the prompt is drawn and
+   cannot be answered.
+
+**The operator's mode request, recorded so it is built once.** Three settings
+were asked for — manual, "Nomad decides per call", and full auto — and D14
+already has exactly those as `manual`, `smart` and `auto` (with `session` as a
+fourth). What is missing is not the policy but the *selector*: `set_mode` has
+no operator-facing surface. The device runs `auto` today, so nothing is being
+babysat, but the picker is real work — a CLI subcommand is easy, and switching
+a live session's mode without a restart wants D26's settings service.
 
 **A hole in D21, found by booting the backend rather than reading it.** The
 SDK warns on every connect:
@@ -251,7 +284,7 @@ them. More files meant more places for the contract to drift.
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
 | T | **Serial transport:** a real `SerialTransport` behind the existing `Transport` protocol, the `pyserial-asyncio` extra, and the config plumbing that makes `[transports.esp32]` mean something | `src/nomad/protocol/transport.py`, `src/nomad/protocol/selection.py`, `src/nomad/core/config.py`, `pyproject.toml`, `tests/test_protocol.py` | `pytest tests/test_protocol.py tests/test_config.py` | **DONE** 2026-08-08 — 820 pass, ruff clean |
 | T2 | **Many surfaces, one screen:** `DisplayFanout`, `[display].mirror`, and the `Link` the composition root never built — so `driver = "esp32"` constructs, and an HDMI monitor sees the same state | `src/nomad/hardware/fanout.py`, `src/nomad/hardware/selection.py`, `src/nomad/app.py`, `tests/test_app.py` | `pytest tests/test_app.py tests/test_hardware.py` | **DONE** 2026-08-08 |
-| W | **ESP32-S3 firmware:** LVGL app speaking D30's framing over native USB CDC; renders `display.state`, emits touch as logical input | `firmware/**` | flashes; `display.state` round-trips against the Pi | TODO |
+| W | **ESP32-S3 firmware:** LovyanGFX app speaking D30's framing over native USB CDC; renders `display.state`, emits touch as `input.touch` | `firmware/**` | flashes; `display.state` round-trips against the Pi | **DONE** 2026-08-09 — flashed from the Pi, `system.hello` round-trips, status card on the glass |
 | X | **Audio on the module (deferred by the operator until after the screen works):** composite CDC+UAC2 in the firmware, an ALSA-backed recorder and speaker behind D37's protocols, and a real `Transcriber`. See "The audio question" below — the research is done, the decision is not | `firmware/**`, `src/nomad/audio/**`, `tests/test_audio.py` | `pytest tests/test_audio.py`; an utterance round-trips to text | DEFERRED |
 
 ### The screen goal (2026-08-08)
