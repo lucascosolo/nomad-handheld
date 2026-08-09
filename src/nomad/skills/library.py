@@ -34,6 +34,48 @@ logger = get_logger(__name__)
 _FENCE = "---"
 
 
+def default_seed_root() -> Path:
+    """`skills/` at the source root — the seed library that ships with Nomad.
+
+    Skills need two homes, not one, and the split is the whole reason this
+    function exists.
+
+    `var/skills` (the configured `[skills].root`) is where *authored* skills
+    live: `var/` is Nomad's writable data directory and it is gitignored, which
+    is exactly right for D25's cheap half of self-upgrading — an operator
+    installs one there without a release, and nothing the device writes about
+    itself is ever committed. But it also means a fresh checkout, and a freshly
+    flashed device, have **no skills at all**, and a library of zero renders no
+    index and builds no `load_skill` tool. Progressive disclosure over an empty
+    directory is an unreachable directory.
+
+    So the seeds are committed, and they sit at the source root next to
+    `NOMAD.md` for the same three reasons that file does (see
+    `agent/identity.py`): they are data rather than code, the operator can read
+    and edit them without a release, and Nomad may *read* its own source tree
+    while writing to it is `never_auto` (D21, D22) — which is precisely the
+    posture wanted for instructions the model must not be able to rewrite for
+    itself. Putting them under `var/` instead would have made them writable by
+    the thing they constrain.
+
+    The composition root loads this first and the configured root second, so a
+    skill authored under `var/skills` **shadows** a seed of the same name. That
+    ordering is the point: an operator disagreeing with a shipped skill edits
+    around it rather than editing the source tree.
+
+    Only `*.md` files that parse as skills are loaded, and anything else in the
+    directory is skipped with a warning — so this directory holds skills and
+    nothing else, no README among them.
+
+    The path is a guess (four levels up, resolved), correct for a source
+    checkout and for `pip install -e .`, which is how this device runs. Where
+    it is wrong, `[skills].seed_root` names the real one rather than requiring
+    a code change, and the boot log says how many seeds were found so a wrong
+    guess is visible rather than silent.
+    """
+    return Path(__file__).resolve().parents[3] / "skills"
+
+
 def parse_skill(text: str, *, source: str = "<string>") -> Skill:
     """Parse `---\\nname: x\\ndescription: y\\n---\\nbody` into a `Skill`."""
     lines = text.splitlines()

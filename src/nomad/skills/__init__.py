@@ -9,7 +9,7 @@ model may do must never be reading the model's own notes to decide it.
 from __future__ import annotations
 
 from nomad.skills.errors import SkillError
-from nomad.skills.library import SkillLibrary, parse_skill
+from nomad.skills.library import SkillLibrary, default_seed_root, parse_skill
 from nomad.skills.models import MAX_DESCRIPTION_CHARS, Skill, SkillCard
 
 __all__ = [
@@ -18,5 +18,6 @@ __all__ = [
     "SkillCard",
     "SkillError",
     "SkillLibrary",
+    "default_seed_root",
     "parse_skill",
 ]

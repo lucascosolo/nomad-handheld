@@ -13,14 +13,43 @@ from pathlib import Path
 
 import pytest
 
+from nomad.agent.identity import compose_identity
+from nomad.app import NomadApp
+from nomad.core.config import NomadConfig
 from nomad.core.logging import get_logger
 from nomad.mcp.skills import LoadSkillParams, LoadSkillTool, build_skill_tools
-from nomad.skills import Skill, SkillCard, SkillError, SkillLibrary, parse_skill
+from nomad.skills import (
+    MAX_DESCRIPTION_CHARS,
+    Skill,
+    SkillCard,
+    SkillError,
+    SkillLibrary,
+    default_seed_root,
+    parse_skill,
+)
 from nomad.targets.local import LocalTarget
 from nomad.tools.base import Risk, ToolContext
 from nomad.tools.workspace import Workspace
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
+
+
+def _app(tmp_path: Path, **overrides: object) -> NomadApp:
+    """A booted composition root, claude_cli so there is a real prompt to read.
+
+    `claude_cli` rather than the `mock` default because a mock backend has no
+    system prompt at all, and "the index reaches the model" is not a claim any
+    amount of mock can support.
+    """
+    data: dict[str, object] = {
+        "core": {"data_dir": str(tmp_path)},
+        "storage": {"path": str(tmp_path / "nomad.db")},
+        "workspace": {"root": str(tmp_path / "workspace")},
+        "agent": {"backend": "claude_cli"},
+        "view": {"enabled": False},
+    }
+    data.update(overrides)
+    return NomadApp(NomadConfig.model_validate(data))
 
 
 @pytest.fixture
@@ -185,6 +214,26 @@ def test_there_is_no_tool_that_installs_a_skill() -> None:
         assert forbidden not in names
 
 
+def test_nothing_in_the_agent_layer_can_see_the_skills_package() -> None:
+    """The index reaches the prompt as text, and text is all `agent/` ever holds.
+
+    `tests/test_layering.py` already omits `skills` from what `agent` may
+    import; this pins the *reason*, next to the rule it protects. A session
+    that could reach a `SkillLibrary` could hand one to the broker it also
+    owns, and `permission_bridge.py` lives in this same package. Threading a
+    rendered `str` down from the composition root is what makes "a skill
+    cannot reach the permission path" structural rather than remembered.
+    """
+    for path in sorted((SRC / "agent").rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert "skills" not in node.module.split("."), f"{path} imports skills (D39)"
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert "skills" not in alias.name.split("."), f"{path} imports skills (D39)"
+
+
 def test_nothing_in_the_permission_path_can_see_the_skills_package() -> None:
     """The broker must never read the model's own notes to decide what it may do.
 
@@ -202,3 +251,140 @@ def test_nothing_in_the_permission_path_can_see_the_skills_package() -> None:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     assert "skills" not in alias.name.split("."), f"{path} imports skills (D39)"
+
+
+# -- the seed library ships, because `var/` does not -------------------------
+
+
+def test_seed_skills_are_committed_and_every_one_of_them_parses() -> None:
+    """The defect this chunk fixes: `var/` is gitignored, so nothing shipped.
+
+    With no seeds a fresh checkout has an empty library, which renders no
+    index and builds no `load_skill` tool — progressive disclosure over a
+    directory the model is never told about. A committed seed root is what
+    makes the subsystem exist at all on a device nobody has authored on yet.
+    """
+    root = default_seed_root()
+    assert root.is_dir(), f"the seed skills directory is missing: {root}"
+    files = sorted(root.rglob("*.md"))
+    assert len(files) >= 4, "a seed library this small is a placeholder"
+    for path in files:
+        skill = parse_skill(path.read_text(encoding="utf-8"), source=str(path))
+        assert skill.card.description
+        assert len(skill.body) > 200, f"{path.name} is a stub, not a skill"
+
+
+def test_the_shipped_index_fits_the_default_budget_without_truncating() -> None:
+    """Shipping a seed set that overflows its own budget is a silent regression.
+
+    Truncation is announced, so this would not be invisible — but a device
+    that arrives already dropping skills it shipped with is a bug in the seed
+    set, not in the budget.
+    """
+    library = SkillLibrary(index_budget_chars=NomadConfig().skills.index_budget_chars)
+    assert library.load_directory(default_seed_root()) == []
+    index = library.render_index()
+    assert len(index) <= NomadConfig().skills.index_budget_chars
+    assert "more skills not shown" not in index, "the shipped seeds overflow the budget"
+    for name in library.names():
+        assert name in index
+
+
+def test_every_seed_description_is_one_line_within_the_cap() -> None:
+    library = SkillLibrary()
+    library.load_directory(default_seed_root())
+    for card in library.cards():
+        assert "\n" not in card.description
+        assert len(card.description) <= MAX_DESCRIPTION_CHARS
+
+
+# -- both roots, and which one wins ------------------------------------------
+
+
+def test_an_authored_skill_shadows_a_seed_of_the_same_name(tmp_path: Path) -> None:
+    """Disagreeing with a shipped skill must not require editing the source tree.
+
+    Seeds load first and `var/skills` loads over them, so the operator's copy
+    wins by name. The reverse order would make the only way to override a seed
+    a write into Nomad's own tree, which is `never_auto` on purpose (D22).
+    """
+    authored = tmp_path / "authored"
+    authored.mkdir()
+    seed_name = sorted(default_seed_root().glob("*.md"))[0].stem
+    (authored / f"{seed_name}.md").write_text(
+        f"---\nname: {seed_name}\ndescription: The operator's own version.\n---\nMine.\n"
+    )
+    app = _app(tmp_path, skills={"root": str(authored)})
+    assert app.skills is not None
+    assert app.skills.load(seed_name).body == "Mine."
+    assert "The operator's own version." in app.skill_index()
+
+
+def test_an_absent_var_skills_directory_still_gets_the_seeds(tmp_path: Path) -> None:
+    """The state every fresh device is in: nothing authored, seeds regardless."""
+    app = _app(tmp_path, skills={"root": str(tmp_path / "never-created")})
+    assert app.skills is not None
+    assert app.skills.names(), "a device with no authored skills got no skills"
+
+
+def test_seeds_can_be_declined_without_disabling_skills(tmp_path: Path) -> None:
+    app = _app(tmp_path, skills={"root": str(tmp_path / "empty"), "seed_root": ""})
+    assert app.skills is not None
+    assert app.skills.names() == []
+    assert app.skill_index() == ""
+
+
+# -- the index actually reaches the model ------------------------------------
+
+
+def test_the_index_is_appended_to_the_prompt_after_the_identity() -> None:
+    """D39 says the index is in every prompt; ordering is `test_memory`'s rule."""
+    prompt = compose_identity(
+        "You are Nomad.", briefing="## What you know", skill_index="Skills available:\n- a: b"
+    )
+    assert prompt.index("You are Nomad.") < prompt.index("## What you know")
+    assert prompt.index("## What you know") < prompt.index("Skills available:")
+
+
+def test_an_absent_section_leaves_no_trace_in_the_prompt() -> None:
+    assert compose_identity("You are Nomad.") == "You are Nomad."
+    assert compose_identity("You are Nomad.", skill_index="") == "You are Nomad."
+
+
+def test_a_booted_device_has_the_index_in_its_live_system_prompt(tmp_path: Path) -> None:
+    """The end-to-end claim, checked where it is actually made.
+
+    Every link matters and each one was individually green while the chain was
+    dead: seeds on disk, a non-empty library, `load_skill` in the toolset the
+    backend is handed, and the rendered index inside the string the SDK is
+    given as `system_prompt`.
+    """
+    app = _app(tmp_path)
+    assert app.skills is not None and app.skills.names()
+
+    surface = {tool.spec.name for tool in app.agent_tools}
+    assert "load_skill" in surface
+    assert "load_skill" in {spec.name for spec in app.session._router.specs}  # noqa: SLF001
+
+    prompt = app.session._backend._system_prompt()  # noqa: SLF001 - pinning the contract
+    assert prompt["preset"] == "claude_code", "the index must not displace the preset"
+    index = app.skill_index()
+    assert index and index in prompt["append"]
+    for name in app.skills.names():
+        assert name in prompt["append"]
+
+
+def test_a_rolled_backend_keeps_the_index(tmp_path: Path) -> None:
+    """Rollover rebuilds the backend; a device must not forget its skills at 168h."""
+    app = _app(tmp_path)
+    rolled = app.session._new_backend(briefing="", resume_session_id=None)  # noqa: SLF001
+    assert app.skill_index() in rolled._system_prompt()["append"]  # noqa: SLF001
+
+
+def test_a_device_with_skills_disabled_injects_nothing(tmp_path: Path) -> None:
+    app = _app(tmp_path, skills={"enabled": False})
+    assert app.skills is None
+    assert app.skill_index() == ""
+    prompt = app.session._backend._system_prompt()  # noqa: SLF001
+    assert "Skills available" not in prompt["append"]
+    assert "load_skill" not in {tool.spec.name for tool in app.agent_tools}

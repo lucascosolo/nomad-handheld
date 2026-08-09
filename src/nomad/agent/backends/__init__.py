@@ -12,7 +12,7 @@ from nomad.agent.backends.base import (
 )
 from nomad.agent.backends.mock import MockBackend
 from nomad.agent.backends.remote_llm import RemoteLlmBackend
-from nomad.agent.identity import load_identity
+from nomad.agent.identity import compose_identity, load_identity
 from nomad.agent.permission_bridge import PermissionBridge
 from nomad.core.config import AgentBackendKind, NomadConfig
 from nomad.core.errors import AgentError
@@ -37,6 +37,7 @@ def create_backend(
     cwd: str | None = None,
     resume_session_id: str | None = None,
     briefing: str = "",
+    skill_index: str = "",
 ) -> AgentBackend:
     """Build the backend named by `[agent].backend`.
 
@@ -51,6 +52,15 @@ def create_backend(
     sync and does no I/O, so composing it (which reads the store) belongs to
     the caller. A backend factory that awaits is one that cannot be called
     from a constructor.
+
+    `skill_index` is the same shape for the same reason and one stronger one.
+    D39 says the index — a name and one line per skill — is in every prompt,
+    so it joins the identity here rather than waiting behind `load_skill`, a
+    tool the model has no reason to call if nothing has told it skills exist.
+    It arrives rendered because `agent` may not import `nomad.skills` at all
+    (`tests/test_layering.py`): the composition root owns the library, this
+    layer only ever sees text. That is what keeps a skill from being able to
+    reach the permission path — there is no object here to reach it with.
     """
     kind = config.agent.backend
 
@@ -60,13 +70,15 @@ def create_backend(
     if kind is AgentBackendKind.REMOTE_LLM:
         return RemoteLlmBackend(config=config.agent.remote_llm)
 
-    identity = load_identity(
-        Path(config.agent.claude_cli.identity_path)
-        if config.agent.claude_cli.identity_path
-        else None
+    identity = compose_identity(
+        load_identity(
+            Path(config.agent.claude_cli.identity_path)
+            if config.agent.claude_cli.identity_path
+            else None
+        ),
+        briefing=briefing,
+        skill_index=skill_index,
     )
-    if briefing.strip():
-        identity = f"{identity}\n\n{briefing.strip()}"
 
     if kind is AgentBackendKind.CLAUDE_CLI:
         if bridge is None:

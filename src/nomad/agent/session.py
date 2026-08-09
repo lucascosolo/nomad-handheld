@@ -144,6 +144,7 @@ class AgentSession:
         memory: MemoryStore | None = None,
         backend: AgentBackend | None = None,
         hardware_tools: list[Tool] | None = None,
+        skill_index: str = "",
         classifier: Classifier | None = None,
         session_id: str | None = None,
         resume_pending: bool = True,
@@ -158,6 +159,12 @@ class AgentSession:
         self._tools = tools
         self._workspace = workspace
         self._memory = memory
+        # Rendered, never a library: `agent` may not import `nomad.skills`
+        # (D39, `tests/test_layering.py`), so the index crosses this boundary
+        # as text exactly like the memory briefing does. Fixed for the life of
+        # the session because installing a skill is an operator act, not a
+        # tool call (D26) — there is nothing that can change it mid-session.
+        self._skill_index = skill_index
         self._session_id = session_id
         self._resume_pending = resume_pending
         self._authorization_timeout = authorization_timeout
@@ -237,12 +244,22 @@ class AgentSession:
     def _new_backend(
         self, *, briefing: str = "", resume_session_id: str | None = None
     ) -> AgentBackend:
+        """Every backend this session ever builds gets the index.
+
+        `briefing` is a parameter because it needs I/O and is therefore only
+        available after `start()`; the index is not, because it was read from
+        disk before the session existed. So it is passed unconditionally here
+        rather than at one call site — the backend built in `__init__` and the
+        one built by a rollover must not differ in what the model is told it
+        knows how to do.
+        """
         return create_backend(
             self._config,
             bridge=self._bridge,
             router=self._router,
             cwd=str(self._workspace.root),
             briefing=briefing,
+            skill_index=self._skill_index,
             resume_session_id=resume_session_id,
         )
 

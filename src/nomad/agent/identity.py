@@ -17,6 +17,17 @@ as the whole prompt — the honest asymmetry of D24 showing up again.
 `NOMAD.md` so the operator can edit it without a release, and so Nomad can
 *read* it — reading its own source is allowed and writing is `never_auto`
 (D21/D22), which is exactly the right shape for a self-description.
+
+**Everything appended to the preset is composed here, from strings** —
+`compose_identity` is the one place that decides what the model's prompt
+contains and in what order. Two things join the identity today: the memory
+briefing (D33) and the skills index (D39). Both arrive *already rendered*, and
+for the index that is a boundary rather than a convenience: `tests/
+test_layering.py` does not list `skills` among the packages `agent` may import,
+so a `SkillLibrary` cannot be reached from anywhere inside the session — the
+composition root renders the index and hands down a `str`. A skill therefore
+enters the prompt as text and cannot enter anywhere else, which is the
+structural half of "a skill is instructions, never authority".
 """
 
 from __future__ import annotations
@@ -60,6 +71,31 @@ def load_identity(path: Path | None = None) -> str:
                        extra={"path": str(resolved)})
         return FALLBACK_IDENTITY
     return text
+
+
+def compose_identity(identity: str, *, briefing: str = "", skill_index: str = "") -> str:
+    """Assemble what gets appended to the backend's prompt, in a fixed order.
+
+    Identity, then what Nomad knows about the operator, then what Nomad knows
+    how to *do*. The order is not cosmetic:
+
+    * **Identity first** so the rest is read as this device's context rather
+      than as a standalone instruction block. `test_memory.py` pins it.
+    * **The skills index last** because it is a menu, not a directive. A list
+      of names sitting above the operator's pinned preferences reads as work to
+      be done; below them it reads as what is available if needed.
+
+    Empty sections vanish entirely rather than leaving a bare heading — a
+    device with no skills must look like a device with no skills, not like one
+    whose index failed to render. That is the same absent-capability rule
+    `build_skill_tools` follows, applied to the prompt instead of the toolset.
+
+    Pure and deterministic: same inputs, same bytes, in this order. A prompt
+    that reshuffles between boots defeats caching and makes behaviour
+    irreproducible, which is why `compose_briefing` is pure too.
+    """
+    sections = [section.strip() for section in (identity, briefing, skill_index)]
+    return "\n\n".join(section for section in sections if section)
 
 
 def default_identity_path() -> Path:
