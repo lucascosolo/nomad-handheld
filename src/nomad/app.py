@@ -39,6 +39,8 @@ feature, and two of the gaps were worse than dormant:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 
 from nomad.agent.session import AgentSession
@@ -108,6 +110,19 @@ OFFLINE_WRITER = "offline"
 #: (chunk O, constraint 1).
 OFFLINE_TITLE = "Onboard"
 
+#: How long after boot the status card is drawn a second time, when a panel is
+#: attached. Opening the serial port toggles DTR/RTS, which on an ESP32-S3 is
+#: the reset line — so the board restarts *because* Nomad connected to it, and
+#: comes back up after the first card has already gone out. Every layer reports
+#: success and the glass sits on "waiting for the Pi".
+#:
+#: A redraw on D30's reboot detection is the principled fix and it is wired
+#: too, but it cannot cover this case: the panel's `seq` restarts from zero
+#: while Nomad's view of it is *also* zero, so there is no backwards step to
+#: detect on a first connect. One deliberate second draw is what makes the
+#: screen right on a cold boot, which is the only boot an operator sees.
+PANEL_SETTLE_SECONDS = 4.0
+
 #: Named workloads registered as `INTERACTIVE` (D38). Registration is
 #: declarative — the tier has no `run` and no handle — so this records what may
 #: never be suspended, and nothing more. Speech-to-text is the reason the tier
@@ -150,6 +165,8 @@ class NomadApp:
         self._config = config
         self._registry = ComponentRegistry()
         self._state = ComponentState.NEW
+        #: The deferred panel redraw, held so `stop()` can cancel it.
+        self._panel_redraw: asyncio.Task[None] | None = None
 
         # Nothing here does I/O or binds anything; constructing the app must
         # be free of side effects so a failed `start()` has nothing stranded.
@@ -637,6 +654,7 @@ class NomadApp:
             raise
         self._state = ComponentState.STARTED
         await self._show_status_card()
+        self._schedule_panel_redraw()
         logger.info(
             "Nomad started",
             extra={
@@ -651,6 +669,27 @@ class NomadApp:
                 "workloads": len(self.governor.inventory()) if self.governor is not None else 0,
             },
         )
+
+    def _schedule_panel_redraw(self) -> None:
+        """Draw the card once more, after the panel has finished restarting.
+
+        Held as a task so `stop()` can cancel it: a four-second sleep that
+        outlives the app would draw to a link that has already closed, which
+        turns a clean shutdown into a traceback.
+        """
+        if self.esp32_link is None:
+            return
+
+        async def redraw() -> None:
+            try:
+                await asyncio.sleep(PANEL_SETTLE_SECONDS)
+                await self._show_status_card()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a cosmetic redraw, never fatal
+                logger.warning("Panel settle redraw failed", extra={"error": str(exc)})
+
+        self._panel_redraw = asyncio.ensure_future(redraw())
 
     async def _show_status_card(self) -> None:
         """The first thing on the glass: what this device is and whether it works.
@@ -688,6 +727,12 @@ class NomadApp:
         on a half-started one — neither of which raises.
         """
         self._state = ComponentState.STOPPING
+        if self._panel_redraw is not None:
+            # Before the registry, so the sleep cannot wake into a closed link.
+            self._panel_redraw.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._panel_redraw
+            self._panel_redraw = None
         await self._registry.stop_all()
         self._state = ComponentState.STOPPED
         logger.info("Nomad stopped")
