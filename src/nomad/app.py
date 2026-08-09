@@ -57,6 +57,7 @@ from nomad.input.choice import (
     PendingQuestion,
 )
 from nomad.input.mapper import InputMapper
+from nomad.input.router import InputRouter
 from nomad.input.stream import InputStream
 from nomad.mcp.offline import build_offline_tools
 from nomad.mcp.server import build_hardware_tools
@@ -238,6 +239,15 @@ class NomadApp:
         # `display_choice` tool, and — when the screen is a browser — the HTTP
         # answer endpoint. Two prompters would be two operators.
         self.input = InputStream(InputMapper(config.input))
+        # What carries a press from the cable to the stream. `feed_*` had no
+        # caller outside its own package until now, so a device with a real
+        # panel could draw a question and never receive the answer. Built only
+        # when there is a link to read: with no panel there is nothing feeding
+        # input, and a router over a link that does not exist would be a task
+        # waiting forever on a laptop build.
+        self.input_router = (
+            InputRouter(self.esp32_link, self.input) if self.esp32_link is not None else None
+        )
         self.prompter = self._build_prompter()
 
         # The onboard tier (chunk O). The router is a fixed phrase set; the
@@ -604,6 +614,11 @@ class NomadApp:
         # up before the session can publish a turn — and both must still be up
         # while the session stops.
         components.extend([self.renderer, self.authprompt, self.input])
+        if self.input_router is not None:
+            # After `self.input`, so the stream's tick loop is running before
+            # anything can be fed into it, and after the link, which is already
+            # earlier in this list.
+            components.append(self.input_router)
         if self.delivery is not None:
             # After the migrations that create its table and after the
             # authorization prompt, so that a notification arriving during a
