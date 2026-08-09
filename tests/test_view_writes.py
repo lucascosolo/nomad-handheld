@@ -482,3 +482,125 @@ async def test_an_unrecognised_phrase_falls_through_to_the_model(tmp_path: Path)
         ]
     finally:
         await app.stop()
+
+
+# -- the mode selector (D14) ----------------------------------------------
+#
+# The control that decides whether the device asks before it acts. Everything
+# else on this page changes what Nomad does next; this changes what he is
+# allowed to do without checking, so it gets its own attack surface.
+
+
+class _ModeRig:
+    """A `ScreenServer` wired to a mode reader and writer, and nothing else."""
+
+    def __init__(self) -> None:
+        self.mode = "manual"
+        self.switches: list[str] = []
+        self.server = ScreenServer(
+            lambda: "<pre>screen</pre>",
+            port=0,
+            refresh_seconds=0.05,
+            mode_source=lambda: self.mode,
+            set_mode=self._set_mode,
+        )
+
+    async def _set_mode(self, mode: str) -> None:
+        self.switches.append(mode)
+        self.mode = mode
+
+
+@pytest.fixture
+async def modes() -> Any:
+    rig = _ModeRig()
+    await rig.server.start()
+    try:
+        yield rig
+    finally:
+        await rig.server.stop()
+
+
+async def test_the_page_says_which_mode_the_device_is_in(modes: _ModeRig) -> None:
+    """A selector that could change the mode but not show it would leave the
+    operator guessing which one they are in."""
+    state = _get(modes.server.url + "state")
+
+    assert state["mode"] == "manual"
+    assert [entry["name"] for entry in state["modes"]] == ["manual", "smart", "auto"]
+    # Labelled by consequence, not by name: "smart" tells an operator nothing
+    # about what happens the next time Nomad wants to run something.
+    assert state["modes"][0]["label"] == "Ask me every time"
+
+
+@pytest.mark.parametrize("mode", ["manual", "smart", "auto"])
+async def test_each_mode_can_be_selected(modes: _ModeRig, mode: str) -> None:
+    status, body = _post(modes.server.url + "mode", {"mode": mode})
+
+    assert status == 202 and body == {"submitted": True}
+    await asyncio.sleep(0.05)
+    assert modes.switches == [mode]
+    assert _get(modes.server.url + "state")["mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["", "AUTO", "yolo", "session", "../auto", 7, None, True])
+async def test_an_unknown_mode_is_refused_and_never_coerced(modes: _ModeRig, mode: object) -> None:
+    """Refused, not defaulted — and certainly not defaulted to the loosest
+    one. `session` is rejected too: it is a grant scope in D14, not a posture,
+    and offering it beside three postures is how a safety control gets
+    misread.
+    """
+    status, _body = _post(modes.server.url + "mode", {"mode": mode})
+
+    assert status == 400
+    assert modes.switches == []
+    assert modes.mode == "manual"
+
+
+async def test_switching_the_mode_needs_the_same_csrf_proof_as_any_write(
+    modes: _ModeRig,
+) -> None:
+    """A cross-origin page must not be able to turn the asking off."""
+    status, _body = _post(modes.server.url + "mode", {"mode": "auto"}, content_type="text/plain")
+    assert status == 403
+
+    status, _body = _post(
+        modes.server.url + "mode",
+        {"mode": "auto"},
+        headers={"Origin": "http://evil.example"},
+    )
+    assert status == 403
+    assert modes.switches == []
+
+
+async def test_a_view_with_no_mode_writer_does_not_mount_the_route() -> None:
+    """Half a selector is not a state this can be in.
+
+    A reader with no writer leaves the view read-only, exactly as it was
+    before the selector existed: the route is not mounted and the page has no
+    buttons to press.
+    """
+    server = ScreenServer(lambda: "<pre>x</pre>", port=0, mode_source=lambda: "manual")
+    await server.start()
+    try:
+        assert server.writable is False
+        status, _body = _post(server.url + "mode", {"mode": "auto"})
+        assert status == 404
+    finally:
+        await server.stop()
+
+
+async def test_the_selector_reaches_the_real_session(tmp_path: Path) -> None:
+    """End to end through the composition root: a click changes the mode the
+    broker will actually be asked with, not a copy of it."""
+    app = NomadApp(_config(tmp_path))
+    await app.start()
+    try:
+        assert app.view is not None
+        assert app.session.mode is not None
+        status, _body = _post(app.view.url + "mode", {"mode": "auto"})
+        assert status == 202
+        await asyncio.sleep(0.1)
+        assert str(app.session.mode) == "auto"
+        assert _get(app.view.url + "state")["mode"] == "auto"
+    finally:
+        await app.stop()

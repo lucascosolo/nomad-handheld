@@ -47,7 +47,7 @@ from pathlib import Path
 
 from nomad.agent.session import AgentSession
 from nomad.audio.selection import create_speaker_driver, create_synthesizer_driver
-from nomad.core.config import NomadConfig
+from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.events import EventBus
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
@@ -527,7 +527,35 @@ class NomadApp:
             submit_text=self.submit,
             pending_choice=pending,
             answer_choice=answer,
+            mode_source=self._current_mode,
+            set_mode=self._switch_mode,
         )
+
+    def _current_mode(self) -> str:
+        """The running session's permission mode, read from the HTTP thread.
+
+        One attribute holding an enum, so there is nothing here to tear. Falls
+        back to the configured mode before the session has started, which is
+        what it will be — reporting nothing would make the selector render
+        with no option marked, and a safety control that shows no state reads
+        as broken.
+        """
+        if self.session.state is ComponentState.STARTED:
+            return str(self.session.mode)
+        return str(self._config.agent.mode)
+
+    async def _switch_mode(self, mode: str) -> None:
+        """Change the permission mode at runtime (D14).
+
+        The composition root does the introducing, as it does for `submit` and
+        the prompt: `view` is not allowed to know this lands on
+        `AgentSession.set_mode`, and it takes a plain string rather than a
+        `PermissionMode` so `view` need not import `core.config` for an enum
+        it only displays. Validation of the string happens on both sides —
+        `ScreenServer` refuses anything outside its selectable set, and this
+        constructor raises on anything `PermissionMode` does not know.
+        """
+        await self.session.set_mode(PermissionMode(mode))
 
     def _view_binding(self) -> tuple[str, str | None]:
         """Where the view listens, and the secret that lets anyone in.

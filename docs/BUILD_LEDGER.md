@@ -9,6 +9,39 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (evening) — a charter, a command policy, and a mode selector
+
+**`NOMAD.md` now says what the device is for.** It described how to speak and
+what was forbidden and never named the goal. The new opening section scopes it
+to five jobs — working memory, small work end to end, engineering on its own
+codebase, glanceable status, reaching the operator's other machines — and says
+what that rules out. The never-do list grew the items that had only ever been
+in a conversation: no acting outward unasked, no credential anywhere, no
+weakening a guard as a step toward finishing a task, no claiming an unrun
+check.
+
+**D41 — the operator's declared command list.** `Bash` stays `never_auto`; a
+declared *command* is the operator's standing approval. Token-prefix match,
+any shell metacharacter disqualifies the whole string, and it suppresses
+exactly two rules (`spec.never_auto` and the workspace-scope rule every shell
+trips) while SSH, HID, DESTRUCTIVE and network are all still evaluated first —
+asserted, not assumed, in `tests/test_permissions.py`. `nomad.toml` declares
+the verification set: `pytest`, `ruff`, read-only `git`. **This is what
+unblocks unattended self-improvement**: Nomad can now run the D22 gate on his
+own change without a human answering a prompt per command.
+
+**D42 — the mode selector**, on the view rather than the CLI, because a CLI
+would write the database and not the running session's in-memory mode. Three
+postures (`manual` / `smart` / `auto`), labelled by consequence, validated
+server-side against its own list, carrying every write protection the other
+endpoints carry. `never_auto` is untouched by it.
+
+Suite: 922 passed before the selector.
+
+**Not yet deployed** — the operator powered the Pi down mid-session. One
+command when it is back: `git push pi main && ssh nomad@nomad.local 'cd
+~/nomad-handheld && git pull --ff-only && sudo systemctl restart nomad'`.
+
 ### 2026-08-09 (later) — a press crosses the cable, and the screen is reachable
 
 **`InputRouter` exists and is wired** (`src/nomad/input/router.py`).

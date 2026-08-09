@@ -87,6 +87,32 @@ PendingSource = Callable[[], Any]
 #: resolved anything; a stale page resolves nothing.
 AnswerChoice = Callable[[str, int], Awaitable[bool]]
 
+#: The permission mode the running session is in, read live from the HTTP
+#: thread. A plain string, because `view` may not import `core.config` for an
+#: enum it only ever displays.
+ModeSource = Callable[[], str]
+
+#: Switch the running session's permission mode (D14). A coroutine, because
+#: tightening to `manual` also revokes standing session grants — which is a
+#: database write, and the one thing that makes a tightening real.
+SetMode = Callable[[str], Awaitable[None]]
+
+#: The three the operator chooses between, in the order they are offered:
+#: ask every time, let the model judge, don't ask. `session` exists in D14 and
+#: is deliberately not here — it is a grant *scope*, not a posture, and a
+#: four-button selector where one button means something structurally
+#: different is how a safety control gets misread.
+SELECTABLE_MODES = ("manual", "smart", "auto")
+
+#: What each one means on a screen the operator reads in one second. Written
+#: as consequences, not as names: "smart" tells you nothing about what will
+#: happen the next time Nomad wants to run something.
+MODE_LABELS = {
+    "manual": "Ask me every time",
+    "smart": "Ask when it matters",
+    "auto": "Don't ask",
+}
+
 _LOOPBACK_NAMES = {"localhost", "ip6-localhost"}
 _SHUTDOWN_TIMEOUT_S = 5.0
 
@@ -122,6 +148,10 @@ _STYLE = """
   #prompt.live { display:block; }
   #prompt button { display:block; width:100%; margin-bottom:.3rem; text-align:left; }
   .warn { color:#c58; font-size:11px; text-align:center; margin-top:.6rem; }
+  #modes { display:flex; gap:.3rem; margin-top:.8rem; width:__WIDTH__px; }
+  #modes button { flex:1; font-size:11px; padding:.4rem .2rem; text-align:center; }
+  #modes button.on { background:#2b3a2b; border-color:#5a7a5a; color:#cfe6cf; }
+  #modes button.on.loose { background:#3a2b2b; border-color:#7a5a5a; color:#e6cfcf; }
 """
 
 #: The read-only page: unchanged from chunk F1, meta-refresh and all. A device
@@ -159,6 +189,7 @@ _PAGE_INTERACTIVE = """<!doctype html>
   <div class="device" id="screen">__SCREEN__</div>
   <div id="prompt"></div>
   __COMPOSE__
+  <div id="modes"></div>
   <div class="caption">nomad __WHERE__ &middot; polling every __REFRESH__s</div>
   <div class="warn">this page can start turns and answer authorization prompts</div>
 </div>
@@ -190,11 +221,34 @@ const renderPrompt = (p) => {
   prompt.appendChild(dismiss);
   prompt.className = 'live';
 };
+const modes = document.getElementById('modes');
+let shownMode = null;
+const renderModes = (state) => {
+  if (!state.modes) { modes.replaceChildren(); shownMode = null; return; }
+  // Rebuilt only when the mode actually changed, so a click does not race a
+  // poll that is halfway through replacing the button under the cursor.
+  if (state.mode === shownMode) return;
+  shownMode = state.mode;
+  modes.replaceChildren();
+  state.modes.forEach((entry) => {
+    const button = document.createElement('button');
+    button.textContent = entry.label;
+    button.title = entry.name;
+    if (entry.name === state.mode) {
+      // `auto` is coloured differently on purpose: the operator should be able
+      // to see at a glance that the device is not asking any more.
+      button.className = entry.name === 'auto' ? 'on loose' : 'on';
+    }
+    button.onclick = async () => { await post('/mode', {mode: entry.name}); poll(); };
+    modes.appendChild(button);
+  });
+};
 const poll = async () => {
   try {
     const state = await (await fetch('/state', {cache: 'no-store'})).json();
     document.getElementById('screen').innerHTML = state.screen;
     renderPrompt(state.prompt);
+    renderModes(state);
   } catch (err) { /* the device went away; the next tick will say so */ }
 };
 const form = document.getElementById('compose');
@@ -266,6 +320,8 @@ class ScreenServer:
         pending_choice: PendingSource | None = None,
         answer_choice: AnswerChoice | None = None,
         token: str | None = None,
+        mode_source: ModeSource | None = None,
+        set_mode: SetMode | None = None,
     ) -> None:
         self._screen_source = screen_source
         self._host = host
@@ -280,6 +336,12 @@ class ScreenServer:
         self._submit_text = submit_text
         self._pending_choice = pending_choice
         self._answer_choice = answer_choice if pending_choice is not None else None
+        self._mode_source = mode_source
+        #: Paired with the reader for the same reason `answer_choice` is paired
+        #: with `pending_choice`: a selector that can change the mode but not
+        #: show it would leave the operator guessing which one they are in,
+        #: and this is the control that decides whether the device asks.
+        self._set_mode = set_mode if mode_source is not None else None
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._state = ComponentState.NEW
@@ -306,7 +368,11 @@ class ScreenServer:
     @property
     def writable(self) -> bool:
         """Whether this view can change anything, or is only a window."""
-        return self._submit_text is not None or self._answer_choice is not None
+        return (
+            self._submit_text is not None
+            or self._answer_choice is not None
+            or self._set_mode is not None
+        )
 
     @property
     def port(self) -> int:
@@ -428,12 +494,19 @@ class ScreenServer:
                 "question": pending.question,
                 "options": list(pending.options),
             }
-        return {
+        payload: dict[str, Any] = {
             "screen": self._screen_source(),
             "prompt": prompt,
             "can_submit": self._submit_text is not None,
             "busy": self._submitting.locked(),
         }
+        if self._mode_source is not None:
+            payload["mode"] = self._mode_source()
+            if self._set_mode is not None:
+                payload["modes"] = [
+                    {"name": name, "label": MODE_LABELS[name]} for name in SELECTABLE_MODES
+                ]
+        return payload
 
     # -- crossing the thread boundary --------------------------------------
 
@@ -510,6 +583,44 @@ class ScreenServer:
                 logger.info("Prompt answer from the browser view resolved nothing")
 
         future.add_done_callback(done)
+        return 202, {"submitted": True}
+
+    def _switch_mode(self, mode: str) -> tuple[int, dict[str, Any]]:
+        """Change the running session's permission mode (D14).
+
+        Validated against `SELECTABLE_MODES` here rather than trusting the
+        page: this endpoint decides whether the device asks before it acts, so
+        it is the last thing that should accept whatever string arrives. An
+        unknown value is refused, not coerced to a default — and certainly not
+        to the loosest one.
+
+        Like the other two writers, this dispatches and returns. Tightening to
+        `manual` revokes standing grants, which is a database write; the page
+        polls `/state` and sees the new mode when it has actually taken.
+        """
+        setter = self._set_mode
+        if setter is None:  # pragma: no cover - route is not mounted
+            return 404, {"error": "not enabled"}
+        if mode not in SELECTABLE_MODES:
+            return 400, {"error": f"unknown mode '{mode}'"}
+        future = self._dispatch(setter(mode))
+        if future is None:
+            return 503, {"error": "the device is not running"}
+
+        def done(fut: concurrent.futures.Future[Any]) -> None:
+            error = fut.exception() if not fut.cancelled() else None
+            if error is not None:
+                logger.warning(
+                    "Switching the permission mode from the browser view failed",
+                    extra={"error": f"{type(error).__name__}: {error}"},
+                )
+
+        future.add_done_callback(done)
+        # Logged at info, unlike the other writes: which mode the device is in
+        # is the single most consequential thing an operator can change here,
+        # and the audit trail should not have to be reconstructed from a
+        # session record.
+        logger.info("Permission mode change requested from the browser view", extra={"mode": mode})
         return 202, {"submitted": True}
 
     # -- the handler -------------------------------------------------------
@@ -673,6 +784,7 @@ class ScreenServer:
                 enabled = {
                     "/submit": server._submit_text is not None,
                     "/answer": server._answer_choice is not None,
+                    "/mode": server._set_mode is not None,
                 }
                 if not enabled.get(path, False):
                     self.send_error(404)
@@ -694,6 +806,13 @@ class ScreenServer:
                         self._send_json(400, {"error": "text is required"})
                         return
                     self._send_json(*server._start_turn(text.strip()[:_MAX_TEXT_CHARS]))
+                    return
+                if path == "/mode":
+                    mode = body.get("mode")
+                    if not isinstance(mode, str):
+                        self._send_json(400, {"error": "mode is required"})
+                        return
+                    self._send_json(*server._switch_mode(mode))
                     return
                 token, index = body.get("token"), body.get("index")
                 # `isinstance(True, int)` is True, and `choices[True]` is

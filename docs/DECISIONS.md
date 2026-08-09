@@ -1251,6 +1251,44 @@ can evaluate by reading the list.
 
 ---
 
+## D42 — The mode selector is a control, not a setting
+
+D14 defined four permission modes and gave the operator no way to change one
+without editing a file and restarting. `AgentSession.set_mode()` existed,
+persisted, and revoked standing grants on a tightening — and had no caller
+outside its own tests. So in practice the device shipped in whichever mode
+`nomad.toml` said, forever.
+
+The selector lives on the **browser view**, and that placement is the decision.
+A CLI subcommand would write the database; it would not change the mode the
+*running* session holds in memory, so the device would keep asking (or keep
+not asking) until a restart. The view is the one surface that reaches the live
+process, and since D40 it is authenticated and reachable from the operator's
+laptop or phone.
+
+- **Three postures are offered: `manual`, `smart`, `auto`** — ask every time,
+  ask when it matters, don't ask. `session` is a *grant scope* in D14, not a
+  posture, and a four-button selector where one button means something
+  structurally different is how a safety control gets misread.
+- **Labelled by consequence, not by name.** "Smart" tells an operator nothing
+  about what happens the next time Nomad wants to run something.
+- **The endpoint validates against its own list.** An unknown value is
+  refused, never coerced to a default — and certainly not to the loosest one.
+- **It is a write, so it carries every write protection**: the token (D40),
+  JSON-only bodies, and the `Origin` / `Sec-Fetch-Site` refusals. A
+  cross-origin page must not be able to turn the asking off.
+- **Reader and writer are paired.** A view that can change the mode but not
+  display it would leave the operator guessing which one they are in, so the
+  route is not mounted without both.
+- **`never_auto` is untouched by all of it.** Switching to `auto` does not
+  unlock HID, SSH, DESTRUCTIVE actions, or writes to Nomad's own source tree —
+  that is the entire point of evaluating those before mode logic (D14, D21).
+
+*Cost to change:* Low. One endpoint, one callable pair, three buttons. The
+glass gets the same selector when a tap can choose an option.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:
