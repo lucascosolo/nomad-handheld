@@ -9,6 +9,66 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 — Nomad is on the Pi, and can be spoken to
+
+**The device is deployed and running its own code.** `~/nomad-handheld` on
+`nomad@nomad.local`, its own venv, `pip install -e ".[dev,agent]"`, Claude Code
+CLI 2.1.226 at `~/.local/bin/claude`. Pushed over SSH to a bare repo at
+`~/nomad-handheld.git` (`git remote add pi ssh://nomad@nomad.local/~/nomad-handheld.git`);
+there is still no GitHub remote and none is needed.
+
+**The suite runs on the device in 56 seconds** — faster than the laptop, which
+is worth knowing before anything gets scheduled around "the Pi is slow".
+
+What landed with it:
+
+- **`nomad status`, `nomad ask`, `nomad chat`.** Before these the only way a
+  human could begin a turn was the browser page, so a headless Pi reached over
+  SSH — which is how this device is actually reached — could not be spoken to
+  at all. `nomad status` starts nothing and binds nothing, so it is safe to run
+  against a Nomad that is already up, and exits non-zero when the backend
+  cannot answer.
+- **A status card on the screen at boot.** One `StatusReport`, three
+  renderings (terminal, card, JSON), so the glass cannot drift from the wire.
+- **The backend probe reports evidence, not configuration.** A CLI on `PATH`
+  that answers `--version` and a credential the process can see. `backend =
+  "claude_cli"` in a file is a claim.
+
+**Three bugs, all found by running things rather than reading them:**
+
+1. **`NOMAD_CONFIG` was a guaranteed startup failure.** It parsed as an
+   override of a top-level `config` key and `extra="forbid"` rejected the whole
+   file. The variable documented as "point Nomad at another config" had never
+   been set by anything, which is the only reason it went unnoticed.
+2. **`problems=problems` handed Pydantic a list it copies**, so every
+   degradation recorded after construction was invisible in the report — the
+   one failure mode that field exists to surface.
+3. **`ManualClock.wait_for_sleepers` bounded itself in loop iterations**, with
+   a comment claiming that made it machine-independent. It made it worse: 500
+   free yields elapse in under a millisecond, so a workload waiting on the
+   database (a worker *thread*, not a coroutine) lost the race. It passed on
+   the laptop it was written on and failed on the device every single run.
+   Now free ticks first, then a real wall-clock deadline.
+
+**The panel is not flashed.** New since the last entry: the ESP32-S3 *is* now
+on the Pi's USB bus (`303a:1001`, `/dev/ttyACM0`, and `nomad` is in `dialout`),
+which the previous entry said it was not. But a read of that port volunteers
+nothing, and a `system.hello` sent with Nomad's own framer gets no answer —
+and `firmware/nomad_face` answers `system.hello` on purpose. So the sketch has
+never been successfully flashed, or is not running. `arduino-cli` is installed
+on the Pi with `esp32:esp32@3.3.11`, so the device can flash itself.
+
+**Chunk W is Nomad's own first job.** The operator's instruction is that the
+touchscreen MVP is what he works on first, using the `improving-yourself`
+skill: scratch worktree (D22), suite as the gate, promotion is the operator's
+call. Committed under `firmware/` rather than left untracked — an interrupted
+agent's writes on disk are how chunk R was lost once already.
+
+**Recorded, and explicitly not to be worked on yet:** the long arc is replacing
+external model calls with work done onboard or on the operator's VPS. Chunk O
+is the shape it takes. The operator has said plainly that it is a roadmap item
+and not somewhere to commit resources now.
+
 **Objective:** the software skeleton for Nomad — a self-upgrading pocket AI
 companion. Claude Code is the agent loop *today*, behind a swappable interface,
 with a local LLM over Tailscale as the eventual backend (D19, D24).

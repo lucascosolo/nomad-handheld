@@ -286,7 +286,12 @@ class SkillsConfig(BaseModel):
     #: wrong (an installed rather than a checked-out tree), or to `""` to ship
     #: no seeds at all and run purely on authored skills.
     seed_root: str | None = None
-    index_budget_chars: int = 800
+    #: Raised from 800 when the seventh seed (`improving-yourself`) landed and
+    #: the shipped index stopped fitting. The default and `nomad.toml` have to
+    #: move together — `tests/test_skills.py` pins the shipped set against
+    #: *this* number, not the file's, so a device with no config still boots
+    #: with a whole index rather than a truncated one.
+    index_budget_chars: int = 1000
 
 
 class SettingsConfig(BaseModel):

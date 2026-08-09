@@ -23,9 +23,25 @@ from typing import Protocol, runtime_checkable
 #: scheduling courtesy, not a timeout.
 _SETTLE_TICKS = 8
 
-#: Upper bound on `wait_for_sleepers` polling. Measured in loop iterations, not
-#: seconds, so a slow machine does not make it flakier.
+#: Free loop yields `wait_for_sleepers` spends before it starts sleeping for
+#: real. Enough that a workload which only awaits other coroutines is caught on
+#: the fast path with no wall-clock cost at all.
 _MAX_POLL_TICKS = 500
+
+#: The real-time bound, used once the free ticks are spent.
+#:
+#: This used to be loop iterations *only*, with a comment claiming that made it
+#: machine-independent. It made it worse. A workload that reaches `sleep()`
+#: after awaiting the database is waiting on a worker thread, and 500 loop
+#: iterations of `asyncio.sleep(0)` elapse in well under a millisecond — so the
+#: bound expired before SQLite could answer, and whether that was a pass or a
+#: failure came down to how fast the disk was. It passed on the laptop it was
+#: written on and failed on the device, every single run.
+_POLL_TIMEOUT_S = 5.0
+
+#: How long each poll parks once real waiting starts. Short enough to keep a
+#: fast case fast, long enough that the loop can service I/O between checks.
+_POLL_INTERVAL_S = 0.002
 
 
 @runtime_checkable
@@ -89,16 +105,30 @@ class ManualClock:
                 entry[1].set_result(None)
         await self.settle()
 
-    async def wait_for_sleepers(self, count: int = 1) -> None:
+    async def wait_for_sleepers(self, count: int = 1, *, timeout: float | None = None) -> None:
         """Return once `count` callers are parked in `sleep`.
 
         This is how a test says "the governor has entered its deadline wait"
         without guessing at a number of `await`s.
+
+        Two phases, and the second one is the fix. Free loop yields first, so a
+        workload that only awaits coroutines is caught immediately and costs
+        nothing. Then real, short sleeps against a wall-clock deadline, because
+        a workload on its way to `sleep()` may be waiting on the database —
+        which is a worker thread, not a coroutine, and no number of free yields
+        will make a thread finish sooner.
         """
         for _ in range(_MAX_POLL_TICKS):
             if len(self._sleepers) >= count:
                 return
             await asyncio.sleep(0)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (_POLL_TIMEOUT_S if timeout is None else timeout)
+        while loop.time() < deadline:
+            if len(self._sleepers) >= count:
+                return
+            await asyncio.sleep(_POLL_INTERVAL_S)
         raise TimeoutError(f"expected {count} sleeper(s), saw {len(self._sleepers)}")
 
     async def settle(self) -> None:

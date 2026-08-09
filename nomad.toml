@@ -211,7 +211,12 @@ root = "var/skills"
 # An authored skill of the same name shadows a seed - operators edit around the
 # shipped set rather than editing the source tree. Set to "" to ship no seeds.
 # seed_root = "skills"
-index_budget_chars = 800
+# Raised from 800 when the seventh seed (`improving-yourself`) landed and the
+# shipped index stopped fitting. Deliberate and in a diff, which is the only
+# way this number should ever move: it is a tax paid on every single turn, so
+# it buys headroom for about one more seed and no more. If an eighth is worth
+# shipping, something here is worth deleting.
+index_budget_chars = 1000
 
 [resources]
 # Background work yields the machine while a turn is live; the interface never
