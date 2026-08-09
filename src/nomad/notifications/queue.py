@@ -160,8 +160,7 @@ class NotificationQueue:
         due = due_at or now
         if expires_at is not None and expires_at <= due:
             raise NotificationRefused(
-                "this notification expires before it is due, so it could never be "
-                "delivered",
+                "this notification expires before it is due, so it could never be delivered",
                 {"due_at": due.isoformat(), "expires_at": expires_at.isoformat()},
             )
 

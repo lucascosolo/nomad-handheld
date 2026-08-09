@@ -126,9 +126,7 @@ def _prompt(
 ) -> tuple[AuthorizationPrompter, FakeResolver, ScriptedPrompter]:
     resolver = resolver or FakeResolver()
     prompter = ScriptedPrompter(result, show=make_show(screen.view(AUTH_PROMPT_WRITER)))
-    component = AuthorizationPrompter(
-        bus=bus, screen=screen, prompter=prompter, resolver=resolver
-    )
+    component = AuthorizationPrompter(bus=bus, screen=screen, prompter=prompter, resolver=resolver)
     return component, resolver, prompter
 
 
@@ -167,9 +165,7 @@ async def test_every_option_is_offered_and_deny_is_the_default_highlight(
 # -- the answer actually resolves the pending authorization ------------------
 
 
-async def test_approving_mints_a_single_use_grant(
-    screen: ScreenOwner, event_bus: EventBus
-) -> None:
+async def test_approving_mints_a_single_use_grant(screen: ScreenOwner, event_bus: EventBus) -> None:
     component, resolver, _ = _prompt(screen, event_bus, _answered(OPTION_APPROVE))
     await component.handle(_pending_event())
     assert resolver.approved == [(PENDING, False)]
@@ -354,7 +350,7 @@ def test_the_command_is_truncated_and_the_verdict_is_not() -> None:
     by `tools/egress.py` from the whole string, so padding the prefix costs
     the operator detail and buys nothing: the target still says `ssh`.
     """
-    padded = "echo " + "a" * 400 + ' ; ssh prod rm -rf /'
+    padded = "echo " + "a" * 400 + " ; ssh prod rm -rf /"
     assert classify(padded) is Egress.REMOTE
     line = compose_question({"tool": "Bash", "params": {"command": padded}}).splitlines()[-1]
     assert line.endswith("\u2026")

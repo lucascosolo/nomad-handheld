@@ -8,19 +8,24 @@ Deliberately `http.server` on a thread and not a web framework. This started as
 one route returning one string; it is now three, which is still not a reason to
 put a second HTTP stack in the process.
 
-**This is a write surface on loopback, and that is a deliberate, narrow
-exception rather than an oversight.** Until chunk F3 nothing in `src/` could
-start a turn or answer an authorization prompt — with a headless display the
-device denied every gated tool call permanently, by construction. The cheapest
-honest fix is to let the page that already shows the screen also act as the
-input peripheral the ESP32 will eventually be. That raises the stakes on a
-server with no authentication, so:
+**This is a write surface, and off loopback it is an authenticated one.** Until
+chunk F3 nothing in `src/` could start a turn or answer an authorization prompt
+— with a headless display the device denied every gated tool call permanently,
+by construction. The cheapest honest fix is to let the page that already shows
+the screen also act as the input peripheral the ESP32 will eventually be. That
+raises the stakes on a server reachable from anywhere, so:
 
-* **Loopback is enforced, not documented.** HTTP API authentication is on the
-  deliberately-deferred list in DECISIONS.md, so anything here that binds a
-  socket is one config edit away from being the unauthenticated network service
-  that gets there first. `start()` refuses a non-loopback host rather than
-  trusting the default, and that refusal is now load-bearing for *writes*.
+* **A non-loopback bind requires a token, enforced, not documented.** A
+  handheld the operator cannot reach from their laptop is a handheld they have
+  to SSH into to answer a yes/no question, so remote access is a feature, not a
+  leak. What must never happen is it arriving *by accident*: `start()` refuses
+  a non-loopback host unless a token was supplied, and every request — read and
+  write alike — must then carry it. The screen shows what the device is doing
+  and the page can start turns; neither is public.
+* **The token is compared with `hmac.compare_digest`** and never logged. It
+  reaches the browser once, as a `?token=` on the first request, and is
+  immediately moved into a `HttpOnly; SameSite=Strict` cookie so it stops
+  appearing in the address bar, in history, and in any `Referer`.
 * **Loopback is not an origin boundary.** Any page in any browser on this
   machine can POST a form to `127.0.0.1`, and cross-origin form posts need no
   preflight. An unauthenticated write endpoint that accepted them would let
@@ -46,6 +51,9 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
+import hmac
+import http.cookies
 import ipaddress
 import json
 import socket
@@ -53,7 +61,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from nomad.core.errors import ConfigError
 from nomad.core.lifecycle import ComponentState
@@ -81,6 +89,11 @@ AnswerChoice = Callable[[str, int], Awaitable[bool]]
 
 _LOOPBACK_NAMES = {"localhost", "ip6-localhost"}
 _SHUTDOWN_TIMEOUT_S = 5.0
+
+#: Where the token lives once the browser has it. `HttpOnly` keeps it away from
+#: the page's own JavaScript, and `SameSite=Strict` means no cross-site request
+#: carries it at all — belt and braces with the JSON/Origin checks below.
+_COOKIE_NAME = "nomad_view"
 
 #: A request body is a sentence and a token. Anything larger is not an operator.
 _MAX_BODY_BYTES = 8192
@@ -146,7 +159,7 @@ _PAGE_INTERACTIVE = """<!doctype html>
   <div class="device" id="screen">__SCREEN__</div>
   <div id="prompt"></div>
   __COMPOSE__
-  <div class="caption">nomad on loopback &middot; polling every __REFRESH__s</div>
+  <div class="caption">nomad __WHERE__ &middot; polling every __REFRESH__s</div>
   <div class="warn">this page can start turns and answer authorization prompts</div>
 </div>
 <script>
@@ -206,7 +219,7 @@ setInterval(poll, __REFRESH_MS__);
 _COMPOSE = (
     '<form id="compose" autocomplete="off">'
     '<input type="text" name="text" maxlength="__MAXLEN__" placeholder="say something to Nomad">'
-    "<button type=\"submit\">Send</button></form>"
+    '<button type="submit">Send</button></form>'
 )
 
 
@@ -226,7 +239,7 @@ def _address_family(host: str) -> int:
         return socket.AF_INET
 
 
-def _is_loopback(host: str) -> bool:
+def is_loopback(host: str) -> bool:
     if host in _LOOPBACK_NAMES:
         return True
     try:
@@ -252,9 +265,14 @@ class ScreenServer:
         submit_text: TextSubmit | None = None,
         pending_choice: PendingSource | None = None,
         answer_choice: AnswerChoice | None = None,
+        token: str | None = None,
     ) -> None:
         self._screen_source = screen_source
         self._host = host
+        #: The shared secret, or `None` for the loopback-only original. An
+        #: empty string is not a token — it would authenticate every request
+        #: that omitted the header, which is the opposite of the point.
+        self._token = token or None
         self._port = port
         self._refresh_seconds = refresh_seconds
         self._width = width
@@ -276,6 +294,10 @@ class ScreenServer:
         #: Refusing is also the honest answer: the device is busy.
         self._submitting = threading.Lock()
         self.turns_submitted = 0
+        #: Counted rather than logged in detail: a device on a network gets
+        #: scanned, and the useful signal is "someone is knocking", not each
+        #: individual knock.
+        self.unauthorized = 0
 
     @property
     def state(self) -> ComponentState:
@@ -294,19 +316,43 @@ class ScreenServer:
         return int(self._server.server_address[1])
 
     @property
+    def remote(self) -> bool:
+        """Whether this view is reachable from anywhere but this machine."""
+        return not is_loopback(self._host)
+
+    @property
     def url(self) -> str:
+        """The address to point a browser at — no token in it.
+
+        The token deliberately does not appear here, because this string is
+        logged at boot and printed by `nomad status`. `login_url` is the one
+        that carries it, and only a caller that asked for it gets it.
+        """
         host = "127.0.0.1" if self._host in _LOOPBACK_NAMES else self._host
+        if host in ("0.0.0.0", "::"):  # noqa: S104 - the bind address, not a URL
+            # A wildcard bind is not somewhere a browser can go. Name the host
+            # the operator would actually type; the socket still listens on all
+            # interfaces.
+            host = socket.gethostname()
         if ":" in host:  # IPv6 literal
             host = f"[{host}]"
         return f"http://{host}:{self.port}/"
 
+    @property
+    def login_url(self) -> str:
+        """`url` plus the token, for handing to the operator exactly once."""
+        if self._token is None:
+            return self.url
+        return f"{self.url}?token={self._token}"
+
     async def start(self) -> None:
         self._state = ComponentState.STARTING
-        if not _is_loopback(self._host):
+        if self.remote and self._token is None:
             self._state = ComponentState.FAILED
             raise ConfigError(
-                f"[view].host must be a loopback address, got '{self._host}'. The screen "
-                "view has no authentication and must not be exposed on a network.",
+                f"[view].host is '{self._host}', which is not loopback, and no token is "
+                "set. A view that can start turns and answer authorization prompts must "
+                "not be reachable off this machine without one.",
                 {"host": self._host},
             )
 
@@ -353,9 +399,7 @@ class ScreenServer:
                 refresh=self._refresh_seconds,
                 screen=self._screen_source(),
             )
-        compose = (
-            _render(_COMPOSE, maxlen=_MAX_TEXT_CHARS) if self._submit_text is not None else ""
-        )
+        compose = _render(_COMPOSE, maxlen=_MAX_TEXT_CHARS) if self._submit_text is not None else ""
         return _render(
             _PAGE_INTERACTIVE,
             style=style,
@@ -364,6 +408,7 @@ class ScreenServer:
             screen=self._screen_source(),
             compose=compose,
             dismiss=DISMISS_INDEX,
+            where="over the network" if self.remote else "on loopback",
         )
 
     def _state_payload(self) -> dict[str, Any]:
@@ -480,13 +525,51 @@ class ScreenServer:
             parts = urlsplit(origin)
             if parts.scheme != "http" or parts.hostname is None:
                 return False
+            if (parts.port or 80) != self.port:
+                return False
             host = parts.hostname
-            return (
-                (host in _LOOPBACK_NAMES or ipaddress.ip_address(host).is_loopback)
-                and (parts.port or 80) == self.port
-            )
+            if host in _LOOPBACK_NAMES:
+                return True
+            try:
+                return ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                # A remote view is reached by whatever name the operator typed
+                # — `nomad.local`, a bare hostname, a LAN address — and this
+                # server cannot enumerate them. The token is what authorizes
+                # the request; the `SameSite=Strict` cookie is what keeps
+                # another site from carrying it. This check is the third layer,
+                # and it only has to be exact while there is nothing else.
+                return self.remote
         except ValueError:
             return False
+
+    def _authorized(self, headers: Any, query_token: str | None = None) -> bool:
+        """Whether this request carries the shared secret.
+
+        Three places to look, in the order they arrive over a session's life:
+        the `?token=` that bootstrapped the browser, the cookie it was moved
+        into, and the `Authorization: Bearer` a script would use. All three are
+        compared with `hmac.compare_digest` — the comparison is not a plausible
+        attack here, but a token check that leaks its own timing is the kind of
+        detail that gets copied into somewhere it matters.
+        """
+        expected = self._token
+        if expected is None:
+            return True
+        offered: list[str] = []
+        if query_token:
+            offered.append(query_token)
+        authorization = headers.get("Authorization") or ""
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer" and value:
+            offered.append(value.strip())
+        cookies = http.cookies.SimpleCookie()
+        with contextlib.suppress(http.cookies.CookieError):
+            cookies.load(headers.get("Cookie") or "")
+        morsel = cookies.get(_COOKIE_NAME)
+        if morsel is not None:
+            offered.append(morsel.value)
+        return any(hmac.compare_digest(candidate, expected) for candidate in offered)
 
     def _reject_write(self, headers: Any) -> str | None:
         """Why this write must not happen, or `None` to let it through."""
@@ -523,14 +606,52 @@ class ScreenServer:
                     "default-src 'none'; style-src 'unsafe-inline'; "
                     "script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
                 )
+                # A no-op unless this request arrived with a `?token=`, which
+                # only the first one from a given browser does.
+                self._set_cookie_if_bootstrapping()
                 self.end_headers()
                 self.wfile.write(body)
 
             def _send_json(self, status: int, payload: dict[str, Any]) -> None:
                 self._send(status, json.dumps(payload).encode("utf-8"), "application/json")
 
+            def _query_token(self) -> str | None:
+                query = parse_qs(urlsplit(self.path).query)
+                values = query.get("token")
+                return values[0] if values else None
+
+            def _gate(self) -> bool:
+                """Answer the request myself when it is not authorized."""
+                if server._authorized(self.headers, self._query_token()):
+                    return True
+                server.unauthorized += 1
+                # No detail, and the count is what gets read. A 401 body that
+                # explained itself would be a scanner's confirmation that
+                # something worth guessing at lives here.
+                self._send_json(401, {"error": "unauthorized"})
+                return False
+
+            def _set_cookie_if_bootstrapping(self) -> None:
+                """Move a `?token=` out of the URL and into a cookie.
+
+                The URL form is the only way to hand a browser the secret, and
+                it is the worst place to leave it: address bar, history, and
+                the `Referer` on anything the page loads. So the first request
+                that carries one gets the cookie and the page is served from
+                the clean URL thereafter.
+                """
+                token = self._query_token()
+                if not token or server._token is None:
+                    return
+                self.send_header(
+                    "Set-Cookie",
+                    f"{_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000",
+                )
+
             def do_GET(self) -> None:  # noqa: N802 - http.server's spelling
                 path = self.path.split("?", 1)[0]
+                if not self._gate():
+                    return
                 if path == "/":
                     self._send(
                         200, server._render_page().encode("utf-8"), "text/html; charset=utf-8"
@@ -547,6 +668,8 @@ class ScreenServer:
 
             def do_POST(self) -> None:  # noqa: N802 - http.server's spelling
                 path = self.path.split("?", 1)[0]
+                if not self._gate():
+                    return
                 enabled = {
                     "/submit": server._submit_text is not None,
                     "/answer": server._answer_choice is not None,

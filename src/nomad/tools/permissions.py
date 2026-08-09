@@ -568,9 +568,7 @@ class PermissionBroker:
             )
 
         # --- never_auto, before mode logic, in every mode (D14) ------------
-        blocked = never_auto_reason(
-            spec, target, scope, allowed_hosts=self._allowed_network_hosts
-        )
+        blocked = never_auto_reason(spec, target, scope, allowed_hosts=self._allowed_network_hosts)
         if blocked is not None:
             return await self._finalize(
                 request,
@@ -698,9 +696,7 @@ class PermissionBroker:
             spec=spec,
         )
 
-    async def _classify(
-        self, request: ToolRequest, spec: ToolSpec
-    ) -> tuple[DecisionOutcome, str]:
+    async def _classify(self, request: ToolRequest, spec: ToolSpec) -> tuple[DecisionOutcome, str]:
         """`smart` mode. Fail closed on every unhappy path."""
         if self._classifier is None:
             return DecisionOutcome.NEEDS_AUTH, "smart mode: no classifier configured"
@@ -800,9 +796,7 @@ class PermissionBroker:
             return GrantSource.SESSION
         return GrantSource.HUMAN
 
-    async def authorize(
-        self, request: ToolRequest, decision: Decision
-    ) -> AuthorizationGrant:
+    async def authorize(self, request: ToolRequest, decision: Decision) -> AuthorizationGrant:
         """Produce the grant for an already-ALLOWED decision.
 
         Either reuses the standing session grant that allowed it — the grant
@@ -1199,9 +1193,7 @@ class ToolExecutor:
         )
         return result
 
-    def _validate(
-        self, grant: AuthorizationGrant, request: ToolRequest
-    ) -> tuple[ToolSpec, Target]:
+    def _validate(self, grant: AuthorizationGrant, request: ToolRequest) -> tuple[ToolSpec, Target]:
         if not isinstance(grant, AuthorizationGrant):
             raise PermissionDenied(
                 "ToolExecutor.run requires an AuthorizationGrant",

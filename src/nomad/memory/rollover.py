@@ -62,8 +62,7 @@ def should_roll(
             return RolloverDecision(
                 roll=True,
                 reason=(
-                    f"session age {hours:.1f}h reached the limit of "
-                    f"{config.session_max_age_hours}h"
+                    f"session age {hours:.1f}h reached the limit of {config.session_max_age_hours}h"
                 ),
             )
 

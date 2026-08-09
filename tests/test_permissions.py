@@ -284,9 +284,7 @@ async def test_hid_tool_at_a_local_target_is_also_rejected(pipeline: Pipeline) -
 
 
 async def test_unknown_tool_and_target_are_denied(pipeline: Pipeline) -> None:
-    unknown_tool = await pipeline.broker.decide(
-        pipeline.request("nope"), PermissionMode.AUTO
-    )
+    unknown_tool = await pipeline.broker.decide(pipeline.request("nope"), PermissionMode.AUTO)
     assert unknown_tool.outcome is DecisionOutcome.DENY
 
     unknown_target = await pipeline.broker.decide(
@@ -364,9 +362,7 @@ async def test_any_hid_output_never_auto_runs_in_any_mode(
 async def test_destructive_never_auto_runs_in_any_mode(
     pipeline: Pipeline, mode: PermissionMode
 ) -> None:
-    decision = await pipeline.broker.decide(
-        pipeline.request("destroy", path="notes.md"), mode
-    )
+    decision = await pipeline.broker.decide(pipeline.request("destroy", path="notes.md"), mode)
     assert decision.outcome is DecisionOutcome.NEEDS_AUTH
     assert decision.never_auto is True
 

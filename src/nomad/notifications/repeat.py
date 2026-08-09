@@ -56,8 +56,7 @@ def parse_repeat_rule(rule: str) -> tuple[str, int]:
             seconds = int(raw)
         except ValueError as exc:
             raise NotificationRefused(
-                f"'{rule}' is not a repeat rule; use 'daily', 'weekly' or "
-                "'interval:<seconds>'",
+                f"'{rule}' is not a repeat rule; use 'daily', 'weekly' or 'interval:<seconds>'",
                 {"rule": rule},
             ) from exc
         if seconds < MIN_INTERVAL_SECONDS:

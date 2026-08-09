@@ -71,8 +71,7 @@ class WriteFileTool:
     spec = ToolSpec(
         name="write_file",
         description=(
-            "Write a UTF-8 text file inside the workspace, creating parent "
-            "directories as needed."
+            "Write a UTF-8 text file inside the workspace, creating parent directories as needed."
         ),
         params_model=WriteFileParams,
         risk=Risk.MUTATING,
@@ -124,9 +123,7 @@ class ListDirTool:
             f"{'d' if entry.is_dir else '-'} {entry.size:>10}  {entry.name}" for entry in entries
         ]
         body = "\n".join(lines) if lines else "(empty directory)"
-        return ToolResult.success(
-            body, path=ctx.workspace.relative(path), entries=len(entries)
-        )
+        return ToolResult.success(body, path=ctx.workspace.relative(path), entries=len(entries))
 
 
 class GlobParams(BaseModel):
@@ -186,8 +183,6 @@ class GrepTool:
         matches = await fs.grep(
             root, params.pattern, file_glob=params.file_glob, limit=params.limit
         )
-        lines = [
-            f"{ctx.workspace.relative(m.path)}:{m.line_number}: {m.line}" for m in matches
-        ]
+        lines = [f"{ctx.workspace.relative(m.path)}:{m.line_number}: {m.line}" for m in matches]
         body = "\n".join(lines) if lines else "(no matches)"
         return ToolResult.success(body, matches=len(matches), pattern=params.pattern)

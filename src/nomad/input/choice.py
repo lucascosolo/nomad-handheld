@@ -215,22 +215,22 @@ class ExternalChoicePrompter:
         """
         return self._resolve(
             token,
-            lambda question: ChoiceResult(
-                outcome=ChoiceOutcome.ANSWERED,
-                option=question.options[index],
-                index=index,
-            )
-            if 0 <= index < len(question.options)
-            else None,
+            lambda question: (
+                ChoiceResult(
+                    outcome=ChoiceOutcome.ANSWERED,
+                    option=question.options[index],
+                    index=index,
+                )
+                if 0 <= index < len(question.options)
+                else None
+            ),
         )
 
     async def cancel(self, token: str) -> bool:
         """The operator declined without choosing. The BACK button, by another road."""
         return self._resolve(token, lambda _question: ChoiceResult(outcome=ChoiceOutcome.CANCELLED))
 
-    def _resolve(
-        self, token: str, build: Callable[[PendingQuestion], ChoiceResult | None]
-    ) -> bool:
+    def _resolve(self, token: str, build: Callable[[PendingQuestion], ChoiceResult | None]) -> bool:
         waiter = self._waiter
         if waiter is None:
             return False

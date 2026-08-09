@@ -134,8 +134,7 @@ class Framing:
         """Wrap a codec-encoded body in `SYNC | length | body | crc32`."""
         if len(body) > self._max_frame_bytes:
             raise ValueError(
-                f"frame body of {len(body)} bytes exceeds max_frame_bytes "
-                f"({self._max_frame_bytes})"
+                f"frame body of {len(body)} bytes exceeds max_frame_bytes ({self._max_frame_bytes})"
             )
         length_field = len(body).to_bytes(LENGTH_BYTES, "little")
         crc = checksum(length_field, body)

@@ -42,8 +42,20 @@ def test_round_trip(value: float, from_unit: str, to_unit: str) -> None:
 
 def test_length_units() -> None:
     units = [
-        "mm", "cm", "m", "km", "in", "inch", "ft", "foot", "feet",
-        "yd", "yard", "mi", "mile", "nmi",
+        "mm",
+        "cm",
+        "m",
+        "km",
+        "in",
+        "inch",
+        "ft",
+        "foot",
+        "feet",
+        "yd",
+        "yard",
+        "mi",
+        "mile",
+        "nmi",
     ]
     for unit in units:
         result = convert(1.0, unit, "m")
@@ -58,8 +70,19 @@ def test_mass_units() -> None:
 
 def test_volume_units() -> None:
     units = [
-        "ml", "l", "litre", "liter", "tsp", "tbsp", "cup", "floz",
-        "fluid ounce", "pt", "qt", "gal", "gallon",
+        "ml",
+        "l",
+        "litre",
+        "liter",
+        "tsp",
+        "tbsp",
+        "cup",
+        "floz",
+        "fluid ounce",
+        "pt",
+        "qt",
+        "gal",
+        "gallon",
     ]
     for unit in units:
         result = convert(1.0, unit, "l")
@@ -83,7 +106,19 @@ def test_data_units_binary() -> None:
 
 def test_duration_units() -> None:
     units = [
-        "ms", "s", "sec", "second", "min", "minute", "h", "hr", "hour", "d", "day", "wk", "week",
+        "ms",
+        "s",
+        "sec",
+        "second",
+        "min",
+        "minute",
+        "h",
+        "hr",
+        "hour",
+        "d",
+        "day",
+        "wk",
+        "week",
     ]
     for unit in units:
         result = convert(1.0, unit, "s")

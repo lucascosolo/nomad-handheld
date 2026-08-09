@@ -143,9 +143,7 @@ class ScreenOwner:
         if holder is None or holder == writer:
             return False
         self.suppressed += 1
-        logger.debug(
-            "Screen write suppressed", extra={"writer": writer, "holder": holder}
-        )
+        logger.debug("Screen write suppressed", extra={"writer": writer, "holder": holder})
         return True
 
     @contextlib.asynccontextmanager
@@ -178,9 +176,7 @@ class ScreenOwner:
         task can run between them on the one loop D1 gives us.
         """
         if self._holder is not None or self._claim_lock.locked():
-            logger.debug(
-                "Screen claim declined", extra={"writer": writer, "holder": self._holder}
-            )
+            logger.debug("Screen claim declined", extra={"writer": writer, "holder": self._holder})
             yield None
             return
         async with self.exclusive(writer) as view:

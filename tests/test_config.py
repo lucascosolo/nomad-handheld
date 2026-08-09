@@ -25,7 +25,7 @@ def test_local_toml_overrides_base(tmp_path: Path) -> None:
     base = tmp_path / "nomad.toml"
     base.write_text('[core]\nname = "base"\n\n[api]\nport = 8080\n')
     local = tmp_path / "nomad.local.toml"
-    local.write_text('[api]\nport = 9999\n')
+    local.write_text("[api]\nport = 9999\n")
 
     config = load_config(base, env={})
 
@@ -35,9 +35,9 @@ def test_local_toml_overrides_base(tmp_path: Path) -> None:
 
 def test_env_overrides_local_and_base(tmp_path: Path) -> None:
     base = tmp_path / "nomad.toml"
-    base.write_text('[api]\nport = 8080\n')
+    base.write_text("[api]\nport = 8080\n")
     local = tmp_path / "nomad.local.toml"
-    local.write_text('[api]\nport = 9999\n')
+    local.write_text("[api]\nport = 9999\n")
 
     config = load_config(base, env={"NOMAD_API__PORT": "7000"})
 

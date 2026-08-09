@@ -28,9 +28,23 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "nomad"
 
 #: Everything below the composition root. `app.py` may import all of it.
 EVERYTHING = {
-    "core", "protocol", "storage", "targets", "hardware", "input",
-    "memory", "tools", "mcp", "agent", "view", "audio", "resources",
-    "notifications", "utilities", "skills", "offline",
+    "core",
+    "protocol",
+    "storage",
+    "targets",
+    "hardware",
+    "input",
+    "memory",
+    "tools",
+    "mcp",
+    "agent",
+    "view",
+    "audio",
+    "resources",
+    "notifications",
+    "utilities",
+    "skills",
+    "offline",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -88,8 +102,16 @@ ALLOWED: dict[str, set[str]] = {
     # (D26, D39) — importing it here would put a writer next to the drafts.
     "offline": {"core", "storage", "tools", "resources"},
     "mcp": {
-        "core", "storage", "targets", "tools", "memory", "audio",
-        "notifications", "utilities", "skills", "offline",
+        "core",
+        "storage",
+        "targets",
+        "tools",
+        "memory",
+        "audio",
+        "notifications",
+        "utilities",
+        "skills",
+        "offline",
     },
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
     # Views onto the session (D11). They render the agent's event vocabulary

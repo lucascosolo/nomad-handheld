@@ -246,9 +246,7 @@ class GrantsRepository:
         that module predates the runtime mode switch and belongs to another
         chunk. It is a candidate to move once ownership allows.
         """
-        await self._db.execute(
-            "UPDATE sessions SET mode = ? WHERE id = ?", (mode, session_id)
-        )
+        await self._db.execute("UPDATE sessions SET mode = ? WHERE id = ?", (mode, session_id))
 
     async def get_session_mode(self, session_id: str) -> str | None:
         row = await self._db.fetch_one("SELECT mode FROM sessions WHERE id = ?", (session_id,))

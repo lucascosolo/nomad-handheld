@@ -42,9 +42,7 @@ def tool_ctx(tmp_path) -> ToolContext:
 
 
 def _at(hour: int, minute: int = 0, offset_hours: int = 0) -> datetime:
-    return datetime(
-        2026, 8, 8, hour, minute, tzinfo=timezone(timedelta(hours=offset_hours))
-    )
+    return datetime(2026, 8, 8, hour, minute, tzinfo=timezone(timedelta(hours=offset_hours)))
 
 
 @pytest.mark.parametrize(

@@ -93,9 +93,7 @@ async def _migration_001_initial_schema(db: Database) -> None:
         """
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grants_session ON grants(session_id)")
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_grants_tool_target ON grants(tool, target)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_grants_tool_target ON grants(tool, target)")
 
     await db.execute(
         """
@@ -118,8 +116,7 @@ async def _migration_001_initial_schema(db: Database) -> None:
         """
     )
     await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pending_auth_session "
-        "ON pending_authorizations(session_id)"
+        "CREATE INDEX IF NOT EXISTS idx_pending_auth_session ON pending_authorizations(session_id)"
     )
 
 
@@ -167,9 +164,7 @@ async def _migration_002_memories(db: Database) -> None:
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind)")
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(forgotten_at)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_memories_forgotten ON memories(forgotten_at)")
 
 
 async def _migration_003_notifications(db: Database) -> None:
@@ -233,9 +228,7 @@ async def _migration_003_notifications(db: Database) -> None:
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_notifications_due ON notifications(state, due_at)"
     )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_notifications_kind ON notifications(kind)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_kind ON notifications(kind)")
 
 
 async def _migration_004_utilities(db: Database) -> None:
@@ -287,9 +280,7 @@ async def _migration_004_utilities(db: Database) -> None:
         )
         """
     )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_stopwatches_running ON stopwatches(running)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_stopwatches_running ON stopwatches(running)")
 
 
 async def _migration_005_offline(db: Database) -> None:
@@ -337,9 +328,7 @@ async def _migration_005_offline(db: Database) -> None:
         )
         """
     )
-    await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_offline_asks_count ON offline_asks(ask_count)"
-    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_offline_asks_count ON offline_asks(ask_count)")
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_offline_asks_routed ON offline_asks(routed_intent)"
     )
@@ -363,8 +352,7 @@ async def _migration_005_offline(db: Database) -> None:
         """
     )
     await db.execute(
-        "CREATE INDEX IF NOT EXISTS idx_offline_promotions_state "
-        "ON offline_promotions(state)"
+        "CREATE INDEX IF NOT EXISTS idx_offline_promotions_state ON offline_promotions(state)"
     )
 
 

@@ -39,7 +39,11 @@ def _config(tmp_path: Path, **overrides: object) -> NomadConfig:
         "storage": {"path": str(tmp_path / "nomad.db")},
         "workspace": {"root": str(tmp_path / "workspace")},
         # Port 0 so concurrent runs never collide on a fixed port.
-        "view": {"enabled": True, "port": 0},
+        # Loopback in tests: the shipped default is remote, and a suite that
+        # bound every ephemeral view to every interface would be antisocial.
+        "view": {"enabled": True, "port": 0, "remote": False},
+        # So a generated view token lands in the tmp dir, never in the repo.
+        "core": {"data_dir": str(tmp_path / "var")},
     }
     data.update(overrides)
     return NomadConfig.model_validate(data)

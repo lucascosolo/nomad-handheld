@@ -118,9 +118,9 @@ class ArbitratedScreen(Protocol):
     same trick `input/choice.py` uses to draw without importing `hardware`.
     """
 
-    def claim_if_free(self, writer: str) -> contextlib.AbstractAsyncContextManager[
-        TextScreen | None
-    ]: ...
+    def claim_if_free(
+        self, writer: str
+    ) -> contextlib.AbstractAsyncContextManager[TextScreen | None]: ...
 
 
 class ScreenNotificationSink:

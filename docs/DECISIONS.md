@@ -1163,12 +1163,57 @@ the permission path — which is the thing this decision exists to forbid.
 
 ---
 
+## D40 — The screen is reachable off the device, and a token is what makes that safe
+
+A handheld you have to SSH into to answer a yes/no question is a handheld whose
+questions go unanswered. Nomad draws authorization prompts and status on a
+320×240 panel in a pocket; the operator is usually at a laptop or holding a
+phone. So `[view].remote` defaults to **on**: the view binds every interface,
+and the browser page that shows the screen, starts turns and answers prompts is
+reachable from the LAN.
+
+What makes that defensible is not the interface it binds to — it is that
+reaching it requires a secret:
+
+- **A non-loopback bind without a token is refused at startup.** `ScreenServer`
+  raises rather than serving, so this cannot become an open network service by
+  editing one line of config. The composition root never hands it a
+  non-loopback host without a token either, so the refusal is a backstop and
+  not something an operator trips over.
+- **The token is generated on first start into `var/view-token`, mode 0600.**
+  Not a config key: a secret in config is a secret in git. It survives
+  restarts, because a token regenerated every boot is a browser re-paired every
+  boot, which is how an operator ends up switching the whole thing off.
+- **Reads are gated too, not just writes.** The screen says what the device is
+  doing and who it is doing it for. `/`, `/screen` and `/state` all require the
+  token.
+- **The token reaches a browser once, as `?token=`, and is immediately moved
+  into an `HttpOnly; SameSite=Strict` cookie** so it stops appearing in the
+  address bar, in history and in `Referer`. `ScreenServer.url` — the one that
+  gets logged and printed into structured records — never contains it;
+  `login_url` does, and only `nomad status` at a terminal prints that.
+- **The existing CSRF checks stay.** JSON-only bodies and the `Origin` /
+  `Sec-Fetch-Site` refusals were never authentication and are not replaced by
+  it; they are what stops another *page* acting as the operator, and
+  `SameSite=Strict` is now a third layer under them.
+
+This closes the "HTTP API authentication" deferral for the view surface only.
+The `api` package still does not exist; when it does, it does not get to
+inherit this by proximity — it authenticates or it stays on loopback.
+
+*Cost to change:* Low. The token check is one method and one config field. High
+only if a second network surface is added that reimplements it differently.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:
 
-- **HTTP API authentication.** Binds to localhost initially. Must be solved
-  before the API is exposed on a network — tracked in docs/BUILD_LEDGER.md under "Known gaps".
+- **HTTP API authentication.** Solved for the browser view in D40 (shared
+  token, generated into `var/`). Still open for the `api` package, which does
+  not exist yet and must not inherit D40's answer by proximity — tracked in
+  docs/BUILD_LEDGER.md under "Known gaps".
 - **Plugin discovery via entry points.** The registry takes explicit
   registration first.
 - **Multi-user / multi-session concurrency.** One session per device for now.

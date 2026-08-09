@@ -71,6 +71,7 @@ class RunCommandTool:
             "cwd": ctx.workspace.relative(cwd),
         }
         if result.exit_code != 0:
-            return ToolResult(ok=False, content=body, error=f"exit {result.exit_code}",
-                              metadata=metadata)
+            return ToolResult(
+                ok=False, content=body, error=f"exit {result.exit_code}", metadata=metadata
+            )
         return ToolResult.success(body, **metadata)

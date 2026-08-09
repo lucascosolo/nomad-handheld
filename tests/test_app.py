@@ -9,6 +9,7 @@ reachable.
 from __future__ import annotations
 
 import asyncio
+import stat
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -16,9 +17,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from nomad.app import NomadApp
+from nomad.app import VIEW_TOKEN_FILE, NomadApp
 from nomad.core.config import NomadConfig
-from nomad.core.errors import ConfigError, LifecycleError
+from nomad.core.errors import LifecycleError
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import HeadlessDisplay
 from nomad.input.choice import ExternalChoicePrompter, NullChoicePrompter
@@ -31,7 +32,11 @@ def _config(tmp_path: Path, **overrides: object) -> NomadConfig:
         "storage": {"path": str(tmp_path / "nomad.db")},
         "workspace": {"root": str(tmp_path / "workspace")},
         # Port 0 so concurrent runs never collide on a fixed port.
-        "view": {"enabled": True, "port": 0},
+        # Loopback in tests: the shipped default is remote, and a suite that
+        # bound every ephemeral view to every interface would be antisocial.
+        "view": {"enabled": True, "port": 0, "remote": False},
+        # So a generated view token lands in the tmp dir, never in the repo.
+        "core": {"data_dir": str(tmp_path / "var")},
     }
     data.update(overrides)
     return NomadConfig.model_validate(data)
@@ -182,9 +187,7 @@ async def test_exactly_one_consumer_owns_the_input_stream(tmp_path: Path) -> Non
     """`InputStream.events()` is single-consumer: two readers steal presses."""
     app = NomadApp(_config(tmp_path))
     holders = [
-        name
-        for name, value in vars(app).items()
-        if getattr(value, "_stream", None) is app.input
+        name for name, value in vars(app).items() if getattr(value, "_stream", None) is app.input
     ]
     assert holders in ([], ["prompter"])
 
@@ -274,13 +277,76 @@ async def test_the_view_can_be_switched_off(tmp_path: Path) -> None:
     assert app.view is None
 
 
-async def test_a_non_loopback_view_host_is_refused(tmp_path: Path) -> None:
-    """The API's deferred auth problem must not arrive through this door."""
-    app = NomadApp(_config(tmp_path, view={"enabled": True, "port": 0, "host": "0.0.0.0"}))
-    with pytest.raises(LifecycleError) as excinfo:
-        await app.start()
-    assert isinstance(excinfo.value.__cause__, ConfigError)
-    await app.stop()
+async def test_a_remote_view_mints_a_token_rather_than_going_open(tmp_path: Path) -> None:
+    """The composition root is what makes `remote = true` safe to default on.
+
+    `ScreenServer` refuses a non-loopback bind with no token; this is the
+    other half — the app never *hands* it a non-loopback host without one, so
+    the refusal is a backstop rather than something an operator trips over.
+    """
+    app = NomadApp(
+        _config(
+            tmp_path,
+            view={"enabled": True, "port": 0, "host": "0.0.0.0"},
+            core={"data_dir": str(tmp_path / "var")},
+        )
+    )
+    await app.start()
+    try:
+        assert app.view is not None
+        assert app.view.remote is True
+        token_file = tmp_path / "var" / VIEW_TOKEN_FILE
+        assert token_file.exists()
+        # 0600 at creation, not a chmod afterwards: a secret that is briefly
+        # world-readable was briefly readable by the world.
+        assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+        assert app.view_login_url is not None
+        assert token_file.read_text().strip() in app.view_login_url
+        # And never in the URL that gets logged.
+        assert app.view_url is not None
+        assert token_file.read_text().strip() not in app.view_url
+    finally:
+        await app.stop()
+
+
+async def test_the_view_token_survives_a_restart(tmp_path: Path) -> None:
+    """A token regenerated on every boot is a browser that has to be re-paired
+    every boot, which is how an operator ends up disabling the whole thing."""
+    config = _config(
+        tmp_path,
+        view={"enabled": True, "port": 0, "host": "0.0.0.0"},
+        core={"data_dir": str(tmp_path / "var")},
+    )
+    token_file = tmp_path / "var" / VIEW_TOKEN_FILE
+
+    first = NomadApp(config)
+    await first.start()
+    first_token = token_file.read_text()
+    await first.stop()
+
+    second = NomadApp(config)
+    await second.start()
+    try:
+        # The token, not the URL: the port is 0 here, so the URL legitimately
+        # differs between boots.
+        assert token_file.read_text() == first_token
+        assert first_token.strip() in (second.view_login_url or "")
+    finally:
+        await second.stop()
+
+
+async def test_a_loopback_view_stays_open_without_ceremony(tmp_path: Path) -> None:
+    """Remote is the interesting case; `remote = false` must not have quietly
+    grown a token the operator now has to find."""
+    app = NomadApp(_config(tmp_path))
+    await app.start()
+    try:
+        assert app.view is not None
+        assert app.view.remote is False
+        assert app.view_login_url == app.view_url
+        assert not (tmp_path / "var" / VIEW_TOKEN_FILE).exists()
+    finally:
+        await app.stop()
 
 
 async def test_a_turn_reaches_the_screen_through_the_real_app(tmp_path: Path) -> None:

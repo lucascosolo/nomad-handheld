@@ -72,15 +72,14 @@ def render_skill_draft(record: AskRecord) -> str:
     like an instruction to acquire a capability is a draft nobody should paste.
     """
     description = (
-        f"What the operator means by \"{record.sample.strip()}\", asked "
-        f"{record.ask_count} times."
+        f'What the operator means by "{record.sample.strip()}", asked {record.ask_count} times.'
     )[:MAX_DRAFT_DESCRIPTION_CHARS]
     return (
         "---\n"
         f"name: {draft_name(record.normalized)}\n"
         f"description: {description}\n"
         "---\n"
-        f"The operator has asked \"{record.sample.strip()}\" {record.ask_count} times "
+        f'The operator has asked "{record.sample.strip()}" {record.ask_count} times '
         f"across {record.distinct_days} days, and every one of those went to the "
         "model because Nomad's offline router does not recognise the phrase.\n\n"
         "Answer it with the tools already available on the device, in as few "

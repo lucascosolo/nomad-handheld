@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import secrets
 from pathlib import Path
 
 from nomad.agent.session import AgentSession
@@ -91,7 +93,13 @@ from nomad.view.authprompt import (
 )
 from nomad.view.renderer import TurnRenderer
 from nomad.view.screen import ScreenOwner
-from nomad.view.server import DISMISS_INDEX, AnswerChoice, PendingSource, ScreenServer
+from nomad.view.server import (
+    DISMISS_INDEX,
+    AnswerChoice,
+    PendingSource,
+    ScreenServer,
+    is_loopback,
+)
 
 logger = get_logger(__name__)
 
@@ -123,6 +131,10 @@ OFFLINE_TITLE = "Onboard"
 #: detect on a first connect. One deliberate second draw is what makes the
 #: screen right on a cold boot, which is the only boot an operator sees.
 PANEL_SETTLE_SECONDS = 4.0
+
+#: Where the view's shared secret is kept, under `[core].data_dir`. A file and
+#: not a config key, because a secret in config is a secret in git.
+VIEW_TOKEN_FILE = "view-token"
 
 #: Named workloads registered as `INTERACTIVE` (D38). Registration is
 #: declarative — the tier has no `run` and no handle — so this records what may
@@ -378,9 +390,7 @@ class NomadApp:
         if not skills.enabled:
             return None
         library = SkillLibrary(index_budget_chars=skills.index_budget_chars)
-        seed_root = (
-            Path(skills.seed_root) if skills.seed_root is not None else default_seed_root()
-        )
+        seed_root = Path(skills.seed_root) if skills.seed_root is not None else default_seed_root()
         seed_skipped = library.load_directory(seed_root) if skills.seed_root != "" else []
         seeded = len(library.names())
         skipped = library.load_directory(Path(skills.root))
@@ -505,9 +515,11 @@ class NomadApp:
                     return await browser.cancel(token)
                 return await browser.answer(token, index)
 
+        host, token = self._view_binding()
         return ScreenServer(
             screen_html,
-            host=view.host,
+            host=host,
+            token=token,
             port=view.port,
             refresh_seconds=view.refresh_seconds,
             width=self._config.display.width,
@@ -516,6 +528,52 @@ class NomadApp:
             pending_choice=pending,
             answer_choice=answer,
         )
+
+    def _view_binding(self) -> tuple[str, str | None]:
+        """Where the view listens, and the secret that lets anyone in.
+
+        Remote is the default because the alternative is an operator who has
+        to SSH into a handheld to answer a yes/no question it just drew on its
+        own screen — which means, in practice, the questions go unanswered.
+        The property that makes it safe is the token, not the interface, so
+        the two are decided in one place: a non-loopback bind never happens
+        without one, and `ScreenServer.start()` refuses if this ever gets it
+        wrong.
+        """
+        view = self._config.view
+        host = view.host
+        if view.remote and is_loopback(host):
+            # A wildcard bind rather than a guessed address: the Pi is on
+            # Wi-Fi and Ethernet at different times and its address changes
+            # under it. `ScreenServer.url` resolves this back to a hostname a
+            # browser can use.
+            host = "0.0.0.0"  # noqa: S104 - deliberate, and gated on the token below
+        if is_loopback(host) and view.token is None:
+            # Loopback with no token is the original chunk F1 behaviour, and
+            # it stays reachable without ceremony. Anything else needs one.
+            return host, None
+        return host, view.token or self._ensure_view_token()
+
+    def _ensure_view_token(self) -> str:
+        """Read the device's view token, generating it on first start.
+
+        Kept in `var/` and not in config: a secret that lives in the config
+        file is a secret that gets committed, and this one has to survive a
+        restart without the operator re-learning it. 0600 at creation rather
+        than a `chmod` afterwards, so it is never briefly world-readable.
+        """
+        path = Path(self._config.core.data_dir) / VIEW_TOKEN_FILE
+        with contextlib.suppress(OSError):
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        token = secrets.token_urlsafe(32)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+        logger.info("Generated a view token", extra={"path": str(path)})
+        return token
 
     async def submit(self, text: str) -> object:
         """The one way a turn begins from outside the session (chunk F3).
@@ -654,6 +712,16 @@ class NomadApp:
     @property
     def view_url(self) -> str | None:
         return self.view.url if self.view is not None else None
+
+    @property
+    def view_login_url(self) -> str | None:
+        """The view's address *with* its token, for handing to the operator.
+
+        Separate from `view_url` on purpose. `view_url` is logged at boot and
+        goes into the structured record; this one is only ever printed by
+        `nomad status`, at a terminal the operator is already sitting at.
+        """
+        return self.view.login_url if self.view is not None else None
 
     def states(self) -> dict[str, ComponentState]:
         return self._registry.states()

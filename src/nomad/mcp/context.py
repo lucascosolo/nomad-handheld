@@ -127,9 +127,7 @@ async def _default_network_check() -> bool:
     """A quick, best-effort reachability probe. Never raises — offline is a
     normal answer, not a failure of this tool."""
     try:
-        _, writer = await asyncio.wait_for(
-            asyncio.open_connection("1.1.1.1", 53), timeout=1.5
-        )
+        _, writer = await asyncio.wait_for(asyncio.open_connection("1.1.1.1", 53), timeout=1.5)
     except (OSError, TimeoutError):
         return False
     writer.close()

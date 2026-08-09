@@ -145,9 +145,7 @@ async def test_a_turn_that_produced_nothing_still_clears_the_working_state(
     renderer: TurnRenderer, screen: HeadlessDisplay
 ) -> None:
     await renderer.handle(_started())
-    await renderer.handle(
-        _finished(TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.COMPLETED))
-    )
+    await renderer.handle(_finished(TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.COMPLETED)))
     assert "Thinking" not in screen.screen.text
 
 
@@ -156,22 +154,16 @@ async def test_a_failed_turn_shows_the_error_not_the_spinner(
 ) -> None:
     await renderer.handle(_started())
     await renderer.handle(
-        _finished(
-            TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.FAILED, error="timed out")
-        )
+        _finished(TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.FAILED, error="timed out"))
     )
     assert "timed out" in screen.screen.text
     assert "Thinking" not in screen.screen.text
 
 
-async def test_an_interrupted_turn_says_so(
-    renderer: TurnRenderer, screen: HeadlessDisplay
-) -> None:
+async def test_an_interrupted_turn_says_so(renderer: TurnRenderer, screen: HeadlessDisplay) -> None:
     await renderer.handle(_started())
     await renderer.handle(
-        _finished(
-            TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.INTERRUPTED, text="half an ")
-        )
+        _finished(TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.INTERRUPTED, text="half an "))
     )
     assert "Interrupted" in screen.screen.text
     assert "half an " in screen.screen.text
@@ -186,9 +178,7 @@ async def test_a_long_answer_is_truncated_from_the_front(
     await renderer.handle(_started())
     await renderer.handle(
         _finished(
-            TurnOutcome(
-                turn_id=TURN, status=TurnOutcomeStatus.COMPLETED, text="A" * 10 + "B" * 90
-            )
+            TurnOutcome(turn_id=TURN, status=TurnOutcomeStatus.COMPLETED, text="A" * 10 + "B" * 90)
         )
     )
     assert screen.screen.text.startswith("A" * 10)
@@ -271,13 +261,147 @@ async def test_the_server_404s_an_unknown_path(screen: HeadlessDisplay) -> None:
         await server.stop()
 
 
-async def test_the_server_refuses_a_non_loopback_bind(screen: HeadlessDisplay) -> None:
-    """Loopback is enforced here, not left to whoever edits the config."""
+async def test_the_server_refuses_a_non_loopback_bind_without_a_token(
+    screen: HeadlessDisplay,
+) -> None:
+    """Remote is allowed; remote *and unauthenticated* is not, and the refusal
+    is here rather than in whoever edits the config."""
     for host in ("0.0.0.0", "192.168.1.10", "::"):
         server = ScreenServer(lambda: screen.screen.html, host=host, port=0)
         with pytest.raises(ConfigError):
             await server.start()
         assert server.state is ComponentState.FAILED
+
+
+async def test_an_empty_token_does_not_count_as_one(screen: HeadlessDisplay) -> None:
+    """`token=""` would authenticate every request that sent no token at all,
+    which is worse than no token: it looks authenticated."""
+    server = ScreenServer(lambda: screen.screen.html, host="0.0.0.0", port=0, token="")
+    with pytest.raises(ConfigError):
+        await server.start()
+
+
+# -- remote, with the token --------------------------------------------------
+
+
+def _get(url: str, **headers: str) -> tuple[int, str, dict[str, str]]:
+    """A GET that reports a 401 instead of raising, since that is the subject."""
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        response = urllib.request.urlopen(request, timeout=5)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode(), dict(exc.headers)
+    return response.status, response.read().decode(), dict(response.headers)
+
+
+@pytest.fixture
+async def remote(screen: HeadlessDisplay):
+    """A view bound off loopback, as a device on a network actually runs it."""
+    server = ScreenServer(
+        lambda: screen.screen.html,
+        host="0.0.0.0",
+        port=0,
+        token="s3cret-token",
+        submit_text=None,
+    )
+    await server.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.port}/"
+    finally:
+        await server.stop()
+
+
+async def test_a_remote_view_starts_when_it_has_a_token(remote) -> None:
+    server, _url = remote
+    assert server.state is ComponentState.STARTED
+    assert server.remote is True
+
+
+async def test_the_screen_is_not_readable_without_the_token(remote) -> None:
+    """The screen says what the device is doing and who it is doing it for.
+    Reads are gated, not just writes."""
+    server, url = remote
+    status, _body, _headers = _get(url)
+
+    assert status == 401
+    assert server.unauthorized == 1
+
+
+async def test_a_wrong_token_is_no_better_than_none(remote) -> None:
+    server, url = remote
+    status, _body, _headers = _get(url, Authorization="Bearer not-the-token")
+
+    assert status == 401
+    assert server.unauthorized == 1
+
+
+async def test_a_bearer_token_gets_in(remote) -> None:
+    server, url = remote
+    status, body, _headers = _get(url, Authorization="Bearer s3cret-token")
+
+    assert status == 200
+    assert "nomad" in body
+    assert server.unauthorized == 0
+
+
+async def test_the_url_form_pairs_the_browser_and_then_gets_out_of_the_url(
+    remote,
+) -> None:
+    """The `?token=` is the only way to hand a browser the secret, and the
+    worst place to leave it — so the response that accepts it also moves it
+    into a cookie the address bar never shows."""
+    server, url = remote
+    status, _body, headers = _get(url + "?token=s3cret-token")
+
+    assert status == 200
+    cookie = headers.get("Set-Cookie", "")
+    assert "nomad_view=s3cret-token" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=Strict" in cookie
+
+    # And the cookie alone is enough afterwards, with a clean URL.
+    status, _body, _headers = _get(url, Cookie="nomad_view=s3cret-token")
+    assert status == 200
+
+
+async def test_a_write_still_needs_the_token(screen: HeadlessDisplay) -> None:
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    server = ScreenServer(
+        lambda: screen.screen.html,
+        host="0.0.0.0",
+        port=0,
+        token="s3cret-token",
+        submit_text=submit,
+    )
+    await server.start()
+    try:
+        url = f"http://127.0.0.1:{server.port}/submit"
+        request = urllib.request.Request(
+            url,
+            data=b'{"text": "do something"}',
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=5)
+        assert excinfo.value.code == 401
+        assert submitted == []
+    finally:
+        await server.stop()
+
+
+async def test_the_login_url_carries_the_token_and_the_plain_one_does_not(
+    remote,
+) -> None:
+    """`url` is logged at boot and printed into structured records; only
+    `login_url` is ever handed to a person."""
+    server, _url = remote
+
+    assert "s3cret-token" not in server.url
+    assert server.login_url.endswith("?token=s3cret-token")
 
 
 async def test_the_server_accepts_the_loopback_spellings(screen: HeadlessDisplay) -> None:

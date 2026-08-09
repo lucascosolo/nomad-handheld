@@ -63,6 +63,7 @@ def tool_ctx(tmp_path) -> ToolContext:
         logger=get_logger("test"),
     )
 
+
 GOOD = """---
 name: morning-briefing
 description: How to assemble the operator's morning briefing.

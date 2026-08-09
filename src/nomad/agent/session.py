@@ -210,9 +210,7 @@ class AgentSession:
         # Nomad's hardware (which Nomad executes) and the backend's own tools
         # (which it executes, but which Nomad still classifies and gates).
         self._hardware = (
-            hardware_tools
-            if hardware_tools is not None
-            else build_hardware_tools(store=memory)
+            hardware_tools if hardware_tools is not None else build_hardware_tools(store=memory)
         )
         register_hardware_tools(tools, self._hardware)
         register_backend_tools(tools)

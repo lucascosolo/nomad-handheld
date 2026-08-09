@@ -375,8 +375,10 @@ def test_the_offline_package_imports_nothing_that_measures_similarity() -> None:
                     for a in node.names
                     if a.name.split(".")[0] in BANNED_IMPORTS
                 ]
-            elif isinstance(node, ast.ImportFrom) and node.module and (
-                node.module.split(".")[0] in BANNED_IMPORTS
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module.split(".")[0] in BANNED_IMPORTS)
             ):
                 offenders.append(f"{path.name}: {node.module}")
     assert offenders == [], f"similarity library imported: {offenders}"
@@ -732,9 +734,7 @@ async def test_offline_status_lists_what_answers_without_a_network(tool_ctx) -> 
     assert result.metadata["count"] == len(DEFAULT_INTENTS)
 
 
-async def test_offline_status_shows_proposals_and_says_who_decides(
-    db: Database, tool_ctx
-) -> None:
+async def test_offline_status_shows_proposals_and_says_who_decides(db: Database, tool_ctx) -> None:
     clock = Ticker()
     config = OfflineConfig(promote_after_asks=5, promote_after_days=3)
     led = IntentLedger(db, config=config, clock=clock)

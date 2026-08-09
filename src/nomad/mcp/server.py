@@ -96,9 +96,7 @@ def build_hardware_tools(
     if store is not None:
         tools.extend(build_memory_tools(store))
     tools.extend(
-        build_utility_tools(
-            notifications=notifications, notes=notes, stopwatches=stopwatches
-        )
+        build_utility_tools(notifications=notifications, notes=notes, stopwatches=stopwatches)
     )
     return tools
 

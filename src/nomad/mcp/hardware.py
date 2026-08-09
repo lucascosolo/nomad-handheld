@@ -239,9 +239,7 @@ class DisplayListItem(BaseModel):
 
 class DisplayListParams(BaseModel):
     title: str = Field(description="List heading.")
-    items: list[DisplayListItem] = Field(
-        min_length=1, max_length=20, description="Items to list."
-    )
+    items: list[DisplayListItem] = Field(min_length=1, max_length=20, description="Items to list.")
     selectable: bool = Field(
         default=False, description="Whether the operator can move a cursor through the items."
     )

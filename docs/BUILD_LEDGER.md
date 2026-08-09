@@ -801,10 +801,11 @@ Ordered by dependency, not calendar. Deliberately no dates.
 
 Deliberately deferred, not forgotten, and not scheduled above.
 
-- **The HTTP API has no authentication and binds to localhost only.** This
-  **must** be solved before the API is exposed on any network beyond the device.
-  It is a prerequisite for anything off-device (a companion app), not an
-  incidental cleanup.
+- **The `api` package has no authentication** — and no code, which is why this
+  is still a gap rather than a bug. The *view* surface is now authenticated and
+  remote by default (D40, shared token in `var/view-token`); the API must not
+  inherit that by proximity when it is written. Solve it there or keep it on
+  loopback.
 - **Plugin entry-point discovery.** Registries take explicit registration only.
 - **Multi-session / multi-user concurrency.** One session per device;
   `AgentSession` is not designed for concurrent sessions sharing a device.

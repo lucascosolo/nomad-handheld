@@ -391,9 +391,7 @@ async def test_an_unknown_turn_state_suspends_before_the_first_unit_of_work(
     """Boot is indeterminate: nobody has told the governor a turn is not live."""
     clock = ManualClock()
     indexer = Indexer()
-    governor = await make_governor(
-        event_bus, clock, initial=TurnState.UNKNOWN, workloads=[indexer]
-    )
+    governor = await make_governor(event_bus, clock, initial=TurnState.UNKNOWN, workloads=[indexer])
     try:
         assert governor.turn_state is TurnState.UNKNOWN
         assert state_of(governor, "indexer") is WorkloadState.SUSPENDED

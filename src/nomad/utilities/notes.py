@@ -102,9 +102,7 @@ class NoteStore:
         """
         return max(1, self._config.note_preview_chars)
 
-    async def add(
-        self, title: str, *, body: str = "", tags: Iterable[str] = ()
-    ) -> Note:
+    async def add(self, title: str, *, body: str = "", tags: Iterable[str] = ()) -> Note:
         clean_title = " ".join(title.split())
         if not clean_title:
             raise UtilityError("a note needs a title")
@@ -237,7 +235,5 @@ class NoteStore:
         return notes[:size]
 
     async def _count_active(self) -> int:
-        row = await self._db.fetch_one(
-            "SELECT COUNT(*) AS n FROM notes WHERE deleted_at IS NULL"
-        )
+        row = await self._db.fetch_one("SELECT COUNT(*) AS n FROM notes WHERE deleted_at IS NULL")
         return int(row["n"]) if row else 0

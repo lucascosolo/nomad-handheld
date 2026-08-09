@@ -107,7 +107,7 @@ def test_a_command_wrapped_in_a_shell_is_still_remote(command: str) -> None:
         "python -c \"import os; os.system('ssh h')\"",
         'python3 -c "print(1)"',
         'perl -e "system(q{ssh h})"',
-        'node --eval "require(\'child_process\')"',
+        "node --eval \"require('child_process')\"",
         # The text that will run has not been written yet.
         "$(echo ssh) prod",
         "echo `ssh prod uptime`",
@@ -142,7 +142,7 @@ def test_a_readable_wrapped_command_is_still_local(command: str) -> None:
 
 
 def test_remote_beats_unreadable_at_any_depth() -> None:
-    """"I found ssh" is never downgraded to "I cannot tell"."""
+    """ "I found ssh" is never downgraded to "I cannot tell"."""
     assert classify('python -c "x" ; ssh prod uptime') is Egress.REMOTE
     assert classify('bash -c "ssh h" -c "python -c 1"') is Egress.REMOTE
 

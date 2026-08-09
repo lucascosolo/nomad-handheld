@@ -58,17 +58,51 @@ SLOT_VALUE = "<slot:value>"
 #: they are unambiguous but they are the first step toward a parser that guesses,
 #: and an unparsed duration costs one round trip.
 _NUMBER_WORDS: dict[str, float] = {
-    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
-    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
-    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
-    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "ninety": 90,
+    "a": 1,
+    "an": 1,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "ninety": 90,
 }
 
 _UNIT_SECONDS: dict[str, float] = {
-    "second": 1.0, "seconds": 1.0, "sec": 1.0, "secs": 1.0, "s": 1.0,
-    "minute": 60.0, "minutes": 60.0, "min": 60.0, "mins": 60.0, "m": 60.0,
-    "hour": 3600.0, "hours": 3600.0, "hr": 3600.0, "hrs": 3600.0, "h": 3600.0,
+    "second": 1.0,
+    "seconds": 1.0,
+    "sec": 1.0,
+    "secs": 1.0,
+    "s": 1.0,
+    "minute": 60.0,
+    "minutes": 60.0,
+    "min": 60.0,
+    "mins": 60.0,
+    "m": 60.0,
+    "hour": 3600.0,
+    "hours": 3600.0,
+    "hr": 3600.0,
+    "hrs": 3600.0,
+    "h": 3600.0,
 }
 
 #: Longest duration the router will build a timer for. Matches the ceiling on
@@ -95,11 +129,7 @@ def normalize(text: str) -> str:
     the right trade: the alias table already covers "tokyo", and the refusal
     routes to the model rather than to a wrong answer.
     """
-    out = [
-        char if char.isalnum() else " "
-        for char in text.casefold()
-        if char not in _ELIDED
-    ]
+    out = [char if char.isalnum() else " " for char in text.casefold() if char not in _ELIDED]
     return " ".join("".join(out).split())
 
 

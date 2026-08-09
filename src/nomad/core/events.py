@@ -142,9 +142,7 @@ class EventBus:
                 )
                 await self._publish_handler_error(sub, event, exc)
 
-    async def _publish_handler_error(
-        self, sub: _Subscriber, event: Event, exc: Exception
-    ) -> None:
+    async def _publish_handler_error(self, sub: _Subscriber, event: Event, exc: Exception) -> None:
         if event.type == _HANDLER_ERROR_TYPE:
             # Guard against infinite recursion: an error handling a
             # handler-error event is only logged, never republished.

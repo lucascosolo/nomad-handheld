@@ -107,9 +107,7 @@ def harness(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _run(harness: Path, mode: str, data: bytes) -> list[str]:
-    result = subprocess.run(
-        [str(harness), mode], input=data, capture_output=True, check=True
-    )
+    result = subprocess.run([str(harness), mode], input=data, capture_output=True, check=True)
     return result.stdout.decode().split()
 
 

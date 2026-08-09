@@ -313,14 +313,10 @@ def test_briefing_is_deterministic_whatever_order_it_is_given() -> None:
         for i in range(8)
     ]
     counts = {"project": 4, "fact": 2}
-    first = compose_briefing(
-        memories, budget_chars=600, max_memories=8, unpinned_counts=counts
-    )
+    first = compose_briefing(memories, budget_chars=600, max_memories=8, unpinned_counts=counts)
     shuffled = list(memories)
     random.Random(7).shuffle(shuffled)
-    second = compose_briefing(
-        shuffled, budget_chars=600, max_memories=8, unpinned_counts=counts
-    )
+    second = compose_briefing(shuffled, budget_chars=600, max_memories=8, unpinned_counts=counts)
     assert first == second
     assert first.startswith(HEADING)
 

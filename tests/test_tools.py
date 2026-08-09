@@ -170,9 +170,7 @@ async def test_write_file_modes(ctx: ToolContext, workspace: Workspace) -> None:
 
 async def test_write_file_refuses_to_leave_the_workspace(ctx: ToolContext) -> None:
     with pytest.raises(PermissionDenied):
-        await WriteFileTool().execute(
-            WriteFileParams(path="../escaped.txt", content="x"), ctx
-        )
+        await WriteFileTool().execute(WriteFileParams(path="../escaped.txt", content="x"), ctx)
 
 
 async def test_write_file_refuses_a_symlink_out_of_the_workspace(
@@ -180,9 +178,7 @@ async def test_write_file_refuses_a_symlink_out_of_the_workspace(
 ) -> None:
     (workspace.root / "door").symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(PermissionDenied):
-        await WriteFileTool().execute(
-            WriteFileParams(path="door/planted.txt", content="x"), ctx
-        )
+        await WriteFileTool().execute(WriteFileParams(path="door/planted.txt", content="x"), ctx)
     assert not (tmp_path / "planted.txt").exists()
 
 

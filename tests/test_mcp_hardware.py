@@ -66,11 +66,19 @@ async def rig(db: Database, event_bus: EventBus, tmp_path: Path):
 
     grants = GrantsRepository(db)
     broker = PermissionBroker(
-        tools=tools, targets=targets, workspace=workspace, grants=grants, bus=event_bus,
+        tools=tools,
+        targets=targets,
+        workspace=workspace,
+        grants=grants,
+        bus=event_bus,
         config=config,
     )
     executor = ToolExecutor(
-        tools=tools, targets=targets, workspace=workspace, grants=grants, bus=event_bus,
+        tools=tools,
+        targets=targets,
+        workspace=workspace,
+        grants=grants,
+        bus=event_bus,
         config=config,
     )
     vault = GrantVault()
@@ -89,9 +97,7 @@ async def rig(db: Database, event_bus: EventBus, tmp_path: Path):
 
 async def _authorize(rig, tool: str, params: dict, target: str = "local") -> None:
     """Run the real pipeline so the router finds a real grant."""
-    request = ToolRequest(
-        tool=tool, target_id=target, params=params, session_id=SESSION_ID
-    )
+    request = ToolRequest(tool=tool, target_id=target, params=params, session_id=SESSION_ID)
     decision = await rig["broker"].decide(request, PermissionMode.AUTO)
     grant = await rig["broker"].authorize(request, decision)
     rig["vault"].stash(grant, request)
@@ -199,9 +205,7 @@ async def test_display_list_reaches_the_driver(rig) -> None:
     await _authorize(rig, "display_list", params)
     result = await rig["router"].call("display_list", params)
     assert result["isError"] is False
-    assert rig["display"].lists == [
-        ("Apps", [("Notes", None), ("Chess", "vs bot")], True)
-    ]
+    assert rig["display"].lists == [("Apps", [("Notes", None), ("Chess", "vs bot")], True)]
 
 
 async def test_display_choice_reaches_the_driver(rig) -> None:

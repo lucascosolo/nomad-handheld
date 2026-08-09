@@ -330,17 +330,31 @@ class DisplayConfig(BaseModel):
 
 
 class ViewConfig(BaseModel):
-    """Serving the headless screen over loopback so a human can watch it (D9).
+    """Serving the screen so a human can watch it and answer it (D9).
 
-    Only meaningful while `[display].driver` is a headless one — an ESP32 has
-    its own glass and needs no browser. `host` is validated at start and
-    refused if it is not a loopback address: the API's auth problem is
-    deliberately deferred, and this must not quietly become the network
-    service that gets there first.
+    Only meaningful while some `[display]` surface is a headless one — the
+    ESP32 has its own glass, but the device mirrors to headless so the screen
+    is readable from a browser too.
+
+    **`remote` is on by default, and it is what makes this a handheld rather
+    than a thing you SSH into.** Nomad asks yes/no questions; an operator who
+    has to open a terminal to answer one will stop answering. The safety
+    property is not "loopback" — it is that reaching the view requires the
+    token, which is generated on first start and never leaves `var/`. A
+    non-loopback bind without a token is refused at startup, so this cannot
+    become an open network service by editing one line.
     """
 
     enabled: bool = True
+    #: Bind off-loopback so the laptop and the phone can reach it. Setting a
+    #: non-loopback `host` explicitly does the same thing; this is the switch
+    #: that does not require knowing the device's address.
+    remote: bool = True
     host: str = "127.0.0.1"
+    #: The shared secret. Left unset in config on purpose — the device
+    #: generates one into `var/view-token` (0600) on first start, so the token
+    #: is not a thing that gets committed. Set it here only to pin a known one.
+    token: str | None = None
     port: int = 8081
     #: How often the browser re-fetches. Not a stream; a refresh is enough for
     #: a screen that changes a few times a second at most.
@@ -589,9 +603,7 @@ def load_config(path: Path | None = None, *, env: Mapping[str, str] | None = Non
     try:
         return NomadConfig.model_validate(merged)
     except ValidationError as exc:
-        offending = ", ".join(
-            ".".join(str(p) for p in error["loc"]) for error in exc.errors()
-        )
+        offending = ", ".join(".".join(str(p) for p in error["loc"]) for error in exc.errors())
         raise ConfigError(
             f"Config validation failed for key(s): {offending}",
             {"errors": exc.errors()},

@@ -85,9 +85,7 @@ def _harness(
     executor = ToolExecutor(
         tools=tools, targets=targets, workspace=workspace, grants=grants, bus=bus, config=config
     )
-    queue = AuthorizationQueue(
-        broker=broker, grants=grants, bus=bus, default_timeout=auth_timeout
-    )
+    queue = AuthorizationQueue(broker=broker, grants=grants, bus=bus, default_timeout=auth_timeout)
     vault = GrantVault()
     harness = Harness(
         bridge=None,  # type: ignore[arg-type]
@@ -299,12 +297,18 @@ async def test_a_shell_command_that_reaches_a_remote_host_is_never_auto(
 
 async def test_a_remote_command_is_classified_onto_the_ssh_target(harness: Harness) -> None:
     """Not merely denied — denied *as a remote call*, so the audit says so."""
-    assert harness.bridge._target_for(  # noqa: SLF001 - pinning the routing rule
-        harness.tools.get("Bash").spec, {"command": "ssh prod uptime"}
-    ) == "ssh"
-    assert harness.bridge._target_for(  # noqa: SLF001
-        harness.tools.get("Bash").spec, {"command": "ls -la"}
-    ) == "local"
+    assert (
+        harness.bridge._target_for(  # noqa: SLF001 - pinning the routing rule
+            harness.tools.get("Bash").spec, {"command": "ssh prod uptime"}
+        )
+        == "ssh"
+    )
+    assert (
+        harness.bridge._target_for(  # noqa: SLF001
+            harness.tools.get("Bash").spec, {"command": "ls -la"}
+        )
+        == "local"
+    )
 
 
 async def test_an_unparseable_command_is_denied_not_guessed(harness: Harness) -> None:
@@ -446,9 +450,7 @@ async def test_a_denied_prompt_denies(harness: Harness) -> None:
 
 async def test_auto_mode_allows_an_ordinary_workspace_write(harness: Harness) -> None:
     harness.set_mode(PermissionMode.AUTO)
-    decision = await harness.bridge.can_use_tool(
-        "Write", {"file_path": "new.txt", "content": "x"}
-    )
+    decision = await harness.bridge.can_use_tool("Write", {"file_path": "new.txt", "content": "x"})
     assert decision.allow is True
 
 
@@ -480,9 +482,7 @@ async def test_a_hid_tool_is_routed_at_the_hid_target(harness: Harness) -> None:
 
 
 async def test_an_allowed_call_stashes_a_claimable_grant(harness: Harness) -> None:
-    decision = await harness.bridge.can_use_tool(
-        f"mcp__{MCP_SERVER_NAME}__read_battery", {}
-    )
+    decision = await harness.bridge.can_use_tool(f"mcp__{MCP_SERVER_NAME}__read_battery", {})
     assert decision.allow is True
     claimed = harness.vault.pop("read_battery", {})
     assert claimed is not None and claimed[0].id == decision.grant_id
@@ -497,9 +497,7 @@ async def test_a_stashed_grant_is_single_use(harness: Harness) -> None:
 async def test_a_stashed_grant_does_not_match_different_arguments(harness: Harness) -> None:
     """Approval is for *these* arguments. Changing them loses the grant."""
     harness.set_mode(PermissionMode.AUTO)
-    await harness.bridge.can_use_tool(
-        f"mcp__{MCP_SERVER_NAME}__display_text", {"text": "hello"}
-    )
+    await harness.bridge.can_use_tool(f"mcp__{MCP_SERVER_NAME}__display_text", {"text": "hello"})
     assert harness.vault.pop("display_text", {"text": "goodbye"}) is None
     assert harness.vault.pop("display_text", {"text": "hello"}) is not None
 

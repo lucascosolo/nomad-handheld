@@ -67,8 +67,9 @@ def load_identity(path: Path | None = None) -> str:
         )
         return FALLBACK_IDENTITY
     if not text:
-        logger.warning("Identity file is empty; using the built-in fallback",
-                       extra={"path": str(resolved)})
+        logger.warning(
+            "Identity file is empty; using the built-in fallback", extra={"path": str(resolved)}
+        )
         return FALLBACK_IDENTITY
     return text
 

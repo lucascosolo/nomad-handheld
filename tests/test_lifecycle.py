@@ -7,8 +7,9 @@ from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 
 
 class RecordingComponent:
-    def __init__(self, name: str, events: list[str], *, fail_start: bool = False,
-                 fail_stop: bool = False) -> None:
+    def __init__(
+        self, name: str, events: list[str], *, fail_start: bool = False, fail_stop: bool = False
+    ) -> None:
         self.name = name
         self._events = events
         self._fail_start = fail_start

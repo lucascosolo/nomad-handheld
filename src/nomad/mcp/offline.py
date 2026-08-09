@@ -103,9 +103,7 @@ class OfflineStatusTool:
             return ToolResult.failure(str(exc))
         if not proposals:
             return ToolResult.success("no promotions are waiting", count=0)
-        listing = "\n".join(
-            f"- {p.name} ({p.form}): {p.rationale} [{p.id}]" for p in proposals
-        )
+        listing = "\n".join(f"- {p.name} ({p.form}): {p.rationale} [{p.id}]" for p in proposals)
         return ToolResult.success(
             f"{len(proposals)} promotion(s) awaiting the operator — Nomad cannot "
             f"accept these itself:\n{listing}",

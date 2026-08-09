@@ -143,9 +143,7 @@ async def probe_backend(config: NomadConfig) -> BackendHealth:
         return BackendHealth(
             backend=backend,
             ready=False,
-            detail=(
-                f"remote_llm is not implemented yet (D24); base_url={base_url or 'unset'}"
-            ),
+            detail=(f"remote_llm is not implemented yet (D24); base_url={base_url or 'unset'}"),
             auth="not-required",
         )
     return await _probe_claude_cli(config.agent.claude_cli)

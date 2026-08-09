@@ -94,6 +94,7 @@ def test_payload_validation_errors_surface_as_protocol_error() -> None:
 
 # --- catalogue -----------------------------------------------------------
 
+
 def test_system_status_resolves_to_a_different_model_per_link() -> None:
     """The draft catalogue gives `system.status` two shapes. Keying on the link
     is what keeps that from being a type collision."""
@@ -537,8 +538,12 @@ async def test_seq_reset_is_detected_and_discards_pending_requests() -> None:
 
     framing = Framing()
     transport.script(
-        frame(Message.build(DisplayLinkStatus(uptime_ms=90_000, free_heap=1, last_seq_seen=40),
-                            seq=41), framing=framing),
+        frame(
+            Message.build(
+                DisplayLinkStatus(uptime_ms=90_000, free_heap=1, last_seq_seen=40), seq=41
+            ),
+            framing=framing,
+        ),
         frame(Message.build(SystemHello(firmware_version="1.2"), seq=0), framing=framing),
     )
 

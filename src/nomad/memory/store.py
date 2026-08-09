@@ -315,8 +315,14 @@ class MemoryStore:
         else:
             scored = [(0, m) for m in memories]
 
-        scored.sort(key=lambda pair: (-pair[0], not pair[1].pinned, -pair[1].updated_at.timestamp(),
-                                      pair[1].id))
+        scored.sort(
+            key=lambda pair: (
+                -pair[0],
+                not pair[1].pinned,
+                -pair[1].updated_at.timestamp(),
+                pair[1].id,
+            )
+        )
         chosen = [m for _, m in scored[:size]]
         return await self._bump(chosen)
 
@@ -402,9 +408,7 @@ class MemoryStore:
 
     async def _active_rows(self, *, kind: MemoryKind | None) -> list[dict[str, Any]]:
         if kind is None:
-            return await self._db.fetch_all(
-                "SELECT * FROM memories WHERE forgotten_at IS NULL"
-            )
+            return await self._db.fetch_all("SELECT * FROM memories WHERE forgotten_at IS NULL")
         return await self._db.fetch_all(
             "SELECT * FROM memories WHERE forgotten_at IS NULL AND kind = ?", (str(kind),)
         )

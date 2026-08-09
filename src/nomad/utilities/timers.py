@@ -54,9 +54,7 @@ def timer_due_at(now: datetime, seconds: float, *, config: UtilitiesConfig) -> d
     return now + timedelta(seconds=seconds)
 
 
-def next_wall_clock(
-    now: datetime, *, hour: int, minute: int, tz_name: str | None
-) -> datetime:
+def next_wall_clock(now: datetime, *, hour: int, minute: int, tz_name: str | None) -> datetime:
     """The next instant that reads `hour:minute` in `tz_name`, strictly future.
 
     Computed on the wall clock and then converted, never by adding seconds:

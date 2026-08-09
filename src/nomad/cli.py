@@ -158,6 +158,13 @@ async def cmd_status(args: argparse.Namespace) -> int:
         print(render_status_json(report))
     else:
         print(render_status_text(report, verbose=args.verbose))
+        # Printed here and not carried in the report: `render_status_json` is
+        # the shape a health check pipes into a file, and the token has no
+        # business in one. This is a terminal the operator is already sitting
+        # at, which is the one place handing it over is safe.
+        login = app.view_login_url
+        if login and login != report.view_url:
+            print(f"\nopen this once to pair a browser:\n  {login}")
     # A device whose backend cannot run a turn exits non-zero, so this is
     # usable from a health check and a systemd `ExecStartPre` without anyone
     # having to parse the text.

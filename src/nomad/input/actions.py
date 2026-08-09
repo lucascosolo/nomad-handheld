@@ -74,9 +74,7 @@ class ActionRegistry:
 
     def require(self, name: str) -> str:
         if name not in self._actions:
-            raise UnknownActionError(
-                f"action {name!r} is not registered", details={"action": name}
-            )
+            raise UnknownActionError(f"action {name!r} is not registered", details={"action": name})
         return name
 
     @property

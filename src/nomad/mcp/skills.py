@@ -56,9 +56,7 @@ class LoadSkillTool:
             skill = self._library.load(params.name)
         except SkillError as exc:
             return ToolResult.failure(str(exc))
-        return ToolResult.success(
-            skill.body, skill=skill.name, description=skill.card.description
-        )
+        return ToolResult.success(skill.body, skill=skill.name, description=skill.card.description)
 
 
 def build_skill_tools(library: SkillLibrary | None) -> list[Tool]:

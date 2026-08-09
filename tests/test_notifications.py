@@ -275,9 +275,7 @@ async def test_a_week_offline_produces_one_notification_not_a_backlog(
     queue: NotificationQueue, clock: FakeClock
 ) -> None:
     """The catch-up rule: advance past `now`, do not replay what was missed."""
-    first = await queue.raise_notification(
-        "hourly", due_at=clock.now, repeat_rule="interval:3600"
-    )
+    first = await queue.raise_notification("hourly", due_at=clock.now, repeat_rule="interval:3600")
     clock.advance(days=7)
     rearmed = await queue.mark_delivered(first.id)
 

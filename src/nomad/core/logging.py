@@ -38,9 +38,7 @@ class _ConsoleFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
-        extras = {
-            key: value for key, value in record.__dict__.items() if key not in _RESERVED
-        }
+        extras = {key: value for key, value in record.__dict__.items() if key not in _RESERVED}
         if extras:
             extra_str = " ".join(f"{k}={v!r}" for k, v in extras.items())
             base = f"{base} [{extra_str}]"

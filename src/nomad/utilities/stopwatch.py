@@ -73,9 +73,7 @@ class Stopwatch(BaseModel):
         """Total run time as of `now`. Pure — this is what makes it durable."""
         if not self.running or self.started_at is None:
             return self.accumulated_seconds
-        return self.accumulated_seconds + max(
-            0.0, (now - self.started_at).total_seconds()
-        )
+        return self.accumulated_seconds + max(0.0, (now - self.started_at).total_seconds())
 
 
 def _row_to_stopwatch(row: dict[str, Any]) -> Stopwatch:
@@ -137,9 +135,7 @@ class StopwatchStore:
         return watch
 
     async def get(self, stopwatch_id: str) -> Stopwatch | None:
-        row = await self._db.fetch_one(
-            "SELECT * FROM stopwatches WHERE id = ?", (stopwatch_id,)
-        )
+        row = await self._db.fetch_one("SELECT * FROM stopwatches WHERE id = ?", (stopwatch_id,))
         return _row_to_stopwatch(row) if row is not None else None
 
     async def list_all(self) -> list[Stopwatch]:

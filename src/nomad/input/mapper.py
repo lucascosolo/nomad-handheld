@@ -102,9 +102,7 @@ class InputMapper:
 
     # -- joystick --------------------------------------------------------
 
-    def on_joystick(
-        self, payload: InputJoystick, *, now: float | None = None
-    ) -> list[InputAction]:
+    def on_joystick(self, payload: InputJoystick, *, now: float | None = None) -> list[InputAction]:
         direction = self._resolve_direction(payload.x, payload.y)
         if direction == self._nav_direction:
             return []  # no edge; tick() handles repeat for whatever is held
@@ -137,9 +135,7 @@ class InputMapper:
     def _resolve_direction(self, x: float, y: float) -> str | None:
         deadzone = self._config.joystick.deadzone
         threshold = (
-            deadzone
-            if self._nav_direction is None
-            else deadzone * self._config.joystick.hysteresis
+            deadzone if self._nav_direction is None else deadzone * self._config.joystick.hysteresis
         )
         ax, ay = abs(x), abs(y)
         if max(ax, ay) < threshold:

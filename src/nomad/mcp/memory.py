@@ -104,9 +104,7 @@ class RecallParams(BaseModel):
         default="",
         description="Words to search for. Empty returns what is most current.",
     )
-    kind: MemoryKind | None = Field(
-        default=None, description="Optionally restrict to one kind."
-    )
+    kind: MemoryKind | None = Field(default=None, description="Optionally restrict to one kind.")
     limit: int | None = Field(
         default=None, ge=1, le=25, description="Rows to return. Omit for the default."
     )
@@ -135,9 +133,7 @@ class RecallTool:
         self._store = store
 
     async def execute(self, params: RecallParams, ctx: ToolContext) -> ToolResult:
-        memories = await self._store.recall(
-            params.query, kind=params.kind, limit=params.limit
-        )
+        memories = await self._store.recall(params.query, kind=params.kind, limit=params.limit)
         if not memories:
             subject = f" about '{params.query}'" if params.query else ""
             return ToolResult.success(f"nothing remembered{subject}", count=0)

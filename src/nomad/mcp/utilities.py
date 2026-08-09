@@ -85,9 +85,7 @@ class SetTimerTool:
         required_capabilities=frozenset(),
     )
 
-    def __init__(
-        self, queue: NotificationQueue, *, config: UtilitiesConfig | None = None
-    ) -> None:
+    def __init__(self, queue: NotificationQueue, *, config: UtilitiesConfig | None = None) -> None:
         self._queue = queue
         self._config = config or UtilitiesConfig()
 
@@ -252,9 +250,7 @@ class NotificationsTool:
 
 class SetReminderParams(BaseModel):
     label: str = Field(description="What to be reminded of.")
-    minutes: float = Field(
-        gt=0.0, le=100000.0, description="How long from now, in minutes."
-    )
+    minutes: float = Field(gt=0.0, le=100000.0, description="How long from now, in minutes.")
     repeat_minutes: float | None = Field(
         default=None, gt=0.0, description="Repeat every this many minutes. Omit for one-off."
     )
@@ -354,9 +350,7 @@ class StopwatchTool:
         try:
             if params.action is StopwatchAction.START:
                 watch = await self._store.start(params.label)
-                return ToolResult.success(
-                    f"started '{watch.label}'", stopwatch_id=watch.id
-                )
+                return ToolResult.success(f"started '{watch.label}'", stopwatch_id=watch.id)
             if params.action is StopwatchAction.LIST:
                 watches = await self._store.list_all()
                 if not watches:
@@ -393,8 +387,7 @@ class StopwatchTool:
             if params.action is StopwatchAction.STOP:
                 watch = await self._store.stop(params.stopwatch_id)
                 return ToolResult.success(
-                    f"stopped '{watch.label}' at "
-                    f"{format_duration(watch.accumulated_seconds)}",
+                    f"stopped '{watch.label}' at {format_duration(watch.accumulated_seconds)}",
                     elapsed_seconds=watch.accumulated_seconds,
                 )
             if params.action is StopwatchAction.RESUME:
@@ -457,9 +450,7 @@ class NoteTool:
         preview = self._store.preview_chars
         try:
             if params.action is NoteAction.ADD:
-                note = await self._store.add(
-                    params.title, body=params.body, tags=params.tags
-                )
+                note = await self._store.add(params.title, body=params.body, tags=params.tags)
                 return ToolResult.success(f"noted: {note.title}", note_id=note.id)
             if params.action is NoteAction.SEARCH:
                 notes = await self._store.search(params.query, limit=params.limit)

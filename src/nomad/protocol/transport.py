@@ -210,9 +210,7 @@ class SerialTransport:
             ) from exc
 
         self._closed = False
-        logger.info(
-            "serial transport open", extra={"port": self._port, "baudrate": self._baudrate}
-        )
+        logger.info("serial transport open", extra={"port": self._port, "baudrate": self._baudrate})
 
     async def stop(self) -> None:
         if self._closed:
