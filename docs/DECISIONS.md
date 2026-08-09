@@ -1206,6 +1206,51 @@ only if a second network surface is added that reimplements it differently.
 
 ---
 
+## D41 — A shell is never_auto; a *declared command* is the operator's approval
+
+`Bash` is `never_auto`, and it must stay that way: a shell is unbounded, and a
+rule that reasoned about the command string would be a denylist, which
+`tools/builtin/shell.py` correctly calls security theatre.
+
+The consequence, once Nomad was actually running on the Pi, was that he could
+not run `pytest` on his own change without a human answering a prompt for it.
+D22 makes the suite the gate on self-modification. A safety model that forbids
+the device from verifying its own work does not produce a safer device — it
+produces one that proposes unverified changes, or an operator who switches to
+`auto` and turns every rule off at once to get through the afternoon.
+
+So there is an allowlist, and it is deliberately the same shape as D31's
+`allowed_network_hosts`: **data the operator wrote down, not a code path.**
+
+- **Token-prefix match, never substring.** `git status` covers `git status
+  --short`. It does not cover `git push`, and it does not cover `git
+  statusfoo`.
+- **Any shell metacharacter disqualifies the whole command** — `;`, `&`, `|`,
+  redirects, substitution, globs, braces, backslashes, newlines. Checked
+  before parsing, not after, so a construct the matcher does not understand is
+  refused rather than interpreted. This is what stops `pytest; rm -rf ~`.
+- **It suppresses exactly two rules.** `spec.never_auto`, and the "exec
+  outside the workspace" scope rule that every shell trips because `Bash`
+  declares no path params. SSH targets, HID output, `DESTRUCTIVE` specs and
+  unapproved network hosts are all still evaluated, in order, *before* this is
+  consulted — so a declared entry cannot be used to reach another machine even
+  if the operator lists `ssh`.
+- **It allows in every mode, including `manual`.** The declaration is the
+  standing approval: made once, in a reviewable file, rather than re-answered
+  on a 320×240 screen every time the device verifies itself.
+- **Empty by default.** A device shipping with somebody else's idea of a safe
+  command is not fail-closed. `nomad.toml` declares the verification set —
+  `pytest`, `ruff`, and read-only `git` — and nothing else.
+- **The audit record names the entry that authorized the call**, so a reviewer
+  does not have to re-derive which line of the list applied.
+
+*Cost to change:* Low. One matcher, one config field, one branch in the broker.
+High if it is ever extended to *patterns* rather than prefixes, or consulted
+anywhere other than `decide()` — either would make the rule something nobody
+can evaluate by reading the list.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

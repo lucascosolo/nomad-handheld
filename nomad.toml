@@ -172,6 +172,28 @@ allowed_network_hosts = []
 # enabled. (D5)
 enable_run_command = false
 command_timeout_seconds = 120
+# Commands that may run without a prompt, in any mode (D41). Token prefixes,
+# not substrings: "git status" covers `git status --short` and nothing else
+# that begins with `git`. Any shell metacharacter disqualifies the command, so
+# `pytest; rm -rf ~` matches nothing here.
+#
+# This list is exactly the verification set D22 makes load-bearing: the suite
+# is the gate on self-modification, so Nomad has to be able to run it without
+# a human answering a prompt per command. Everything on it is read-only or
+# reports a result; nothing on it writes, publishes, or reaches another host —
+# and an entry that somehow did would still be blocked, because SSH, HID,
+# DESTRUCTIVE and network rules all run before this list is consulted.
+allowed_commands = [
+  "pytest",
+  "ruff check",
+  "ruff format --check",
+  "git status",
+  "git diff",
+  "git log",
+  "git show",
+  "git branch",
+  "git worktree list",
+]
 
 # NOTE: the old [ai] section is gone. Model selection is now backend selection
 # ([agent].backend, D24) and lives with the backend it belongs to. D17's routing

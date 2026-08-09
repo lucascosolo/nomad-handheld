@@ -41,6 +41,14 @@ nobody can reach a keyboard.
    ./.venv/bin/ruff check src tests
    ```
 
+   **These two commands run without asking you to be approved for them**, and
+   that is deliberate: the operator declared them in `[tools].allowed_commands`
+   (D41), so verifying your own work costs no prompt. The list is narrow —
+   `pytest`, `ruff`, and read-only `git`. Anything else is still a prompt, and
+   a command with a `;`, a `|`, a `&&` or a glob in it matches nothing on that
+   list, however innocent the first word looks. Run them as separate calls
+   rather than chaining them; chaining is exactly what the rule refuses.
+
    A red suite ends the attempt. It does not mean "fix the test" — the tests
    are the gate that makes self-modification survivable, and a gate you can
    edit is not a gate. If you believe a test is genuinely wrong, say so and

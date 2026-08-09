@@ -188,11 +188,15 @@ def _make_pipeline(
     *,
     enable_run_command: bool = False,
     classifier: object = None,
+    allowed_commands: list[str] | None = None,
 ) -> Pipeline:
     config = NomadConfig.model_validate(
         {
             "workspace": {"root": str(root)},
-            "tools": {"enable_run_command": enable_run_command},
+            "tools": {
+                "enable_run_command": enable_run_command,
+                "allowed_commands": allowed_commands or [],
+            },
         }
     )
     workspace = Workspace(root)
@@ -940,3 +944,167 @@ def test_decision_model_is_serializable() -> None:
     )
     assert decision.model_dump(mode="json")["outcome"] == "allow"
     assert decision.allowed is True
+
+
+# -- the operator's declared command list (D41) -----------------------------
+#
+# The relaxation of `never_auto`, and therefore the code most worth attacking.
+# `test_command_policy.py` covers the matcher; these cover what the *broker*
+# does with it — which rules it suppresses, and which it must not.
+
+
+VERIFICATION_COMMANDS = ["pytest", "ruff check", "git status"]
+
+
+def _declared_pipeline(db: Database, bus: EventBus, root: Path) -> Pipeline:
+    return _make_pipeline(
+        db,
+        bus,
+        root,
+        enable_run_command=True,
+        allowed_commands=VERIFICATION_COMMANDS,
+        classifier=_always_safe,
+    )
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_a_declared_command_runs_without_a_prompt_in_every_mode(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """Including `manual`. The declaration *is* the operator's approval — made
+    once, in a file they can read, rather than re-answered on a 320x240 screen
+    every time Nomad verifies its own change (D22)."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _declared_pipeline(db, event_bus, root)
+
+    decision = await pipeline.broker.decide(
+        pipeline.request("run_command", command="pytest -q", cwd="."), mode
+    )
+
+    assert decision.outcome is DecisionOutcome.ALLOW
+    assert decision.never_auto is False
+    assert decision.grant_source is GrantSource.AUTO
+    # The audit trail names the entry that authorized it.
+    assert "pytest" in decision.reason
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_an_undeclared_command_is_still_never_auto(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """The list is an allowlist, not a switch. Everything off it is unchanged."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _declared_pipeline(db, event_bus, root)
+
+    decision = await pipeline.broker.decide(
+        pipeline.request("run_command", command="rm -rf /", cwd="."), mode
+    )
+
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_a_declared_prefix_cannot_smuggle_a_second_command(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """The attack this whole feature has to survive."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _declared_pipeline(db, event_bus, root)
+
+    decision = await pipeline.broker.decide(
+        pipeline.request("run_command", command="pytest -q; rm -rf /", cwd="."), mode
+    )
+
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_a_declared_command_on_an_ssh_target_is_still_blocked(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """The rule ordering, asserted rather than assumed: the policy suppresses
+    `never_auto` and the workspace-scope rule, and *nothing else*. A command
+    that lands on another machine is blocked whatever the list says."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _make_pipeline(
+        db,
+        event_bus,
+        root,
+        enable_run_command=True,
+        allowed_commands=["pytest"],
+        classifier=_always_safe,
+    )
+
+    decision = await pipeline.broker.decide(
+        ToolRequest(
+            tool="run_command",
+            target_id="ssh:ws",
+            params={"command": "pytest -q", "cwd": "."},
+            session_id=SESSION_ID,
+        ),
+        mode,
+    )
+
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True
+    assert "SSH target" in decision.reason
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_a_declared_command_never_unlocks_hid_or_destructive_tools(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """A tool that happens to take a `command` param must not inherit the
+    relaxation. The policy is consulted only for tools that declare EXEC, and
+    the HID and DESTRUCTIVE rules run before it regardless."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _make_pipeline(
+        db,
+        event_bus,
+        root,
+        allowed_commands=["pytest", "type_text", "destroy"],
+        classifier=_always_safe,
+    )
+
+    for tool, target in (("type_text", "hid"), ("destroy", "local")):
+        decision = await pipeline.broker.decide(
+            ToolRequest(
+                tool=tool,
+                target_id=target,
+                params={"command": "pytest", "text": "x", "path": "p"},
+                session_id=SESSION_ID,
+            ),
+            mode,
+        )
+        assert decision.outcome is DecisionOutcome.NEEDS_AUTH, tool
+        assert decision.never_auto is True, tool
+
+
+async def test_an_empty_policy_leaves_the_shell_exactly_as_it_was(
+    db: Database, event_bus: EventBus, tmp_path: Path
+) -> None:
+    """The shipped default. Nothing about `Bash` changes until an operator
+    writes a list down."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    root = tmp_path / "ws"
+    root.mkdir()
+    pipeline = _make_pipeline(db, event_bus, root, enable_run_command=True)
+
+    decision = await pipeline.broker.decide(
+        pipeline.request("run_command", command="pytest -q", cwd="."), PermissionMode.AUTO
+    )
+
+    assert decision.outcome is DecisionOutcome.NEEDS_AUTH
+    assert decision.never_auto is True

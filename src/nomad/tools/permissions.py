@@ -58,6 +58,7 @@ from nomad.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from nomad.tools.command_policy import CommandPolicy
 from nomad.tools.registry import ToolRegistry
 from nomad.tools.workspace import Workspace
 
@@ -404,6 +405,7 @@ def never_auto_reason(
     scope: str,
     *,
     allowed_hosts: frozenset[str] = frozenset(),
+    command_allowed: bool = False,
 ) -> str | None:
     """The `never_auto` rules (D14), in one place, checked before mode logic.
 
@@ -415,8 +417,17 @@ def never_auto_reason(
     path: hosts the operator has declared safe to reach unattended (D31).
     Empty by default, because a device that ships trusting somebody else's
     domain list is not fail-closed.
+
+    `command_allowed` is the second such relaxation (D41): the caller has
+    already matched this call's command string against the operator's declared
+    `CommandPolicy`. It suppresses **exactly two** of the rules below — the
+    `never_auto` declaration itself, and the trailing "exec outside the
+    workspace" rule that every shell trips because `Bash` declares no path
+    params. Everything between them still runs, and still runs first, so a
+    declared command that lands on an SSH target, emits HID, or reaches an
+    unapproved host is blocked exactly as before.
     """
-    if spec.never_auto:
+    if spec.never_auto and not command_allowed:
         return f"'{spec.name}' is declared never_auto"
     if target.kind is TargetKind.SSH:
         return f"any action on an SSH target ({target.id})"
@@ -448,7 +459,11 @@ def never_auto_reason(
             "writing to or executing in Nomad's own running source tree "
             "(use D22's self-update path)"
         )
-    if spec.permissions & ESCALATING_PERMISSIONS and scope != SCOPE_WORKSPACE:
+    if (
+        spec.permissions & ESCALATING_PERMISSIONS
+        and scope != SCOPE_WORKSPACE
+        and not command_allowed
+    ):
         return f"writes or exec outside the workspace root (scope={scope})"
     return None
 
@@ -488,6 +503,7 @@ class PermissionBroker:
         self._allowed_network_hosts = frozenset(
             host.lower().lstrip(".") for host in config.tools.allowed_network_hosts if host.strip()
         )
+        self._command_policy = CommandPolicy.from_entries(config.tools.allowed_commands)
 
     @property
     def workspace(self) -> Workspace:
@@ -567,8 +583,25 @@ class PermissionBroker:
                 spec=spec,
             )
 
+        # --- the operator's declared command list (D41) ---------------------
+        # Matched here so the reason is available below, but it authorizes
+        # nothing on its own: `never_auto_reason` still runs every other rule
+        # with this as an input, and the ALLOW branch it enables sits after
+        # the network check.
+        command = request.params.get("command")
+        declared = (
+            self._command_policy.permits(command if isinstance(command, str) else None)
+            and Permission.EXEC in spec.permissions
+        )
+
         # --- never_auto, before mode logic, in every mode (D14) ------------
-        blocked = never_auto_reason(spec, target, scope, allowed_hosts=self._allowed_network_hosts)
+        blocked = never_auto_reason(
+            spec,
+            target,
+            scope,
+            allowed_hosts=self._allowed_network_hosts,
+            command_allowed=declared,
+        )
         if blocked is not None:
             return await self._finalize(
                 request,
@@ -589,6 +622,25 @@ class PermissionBroker:
                 DecisionOutcome.DENY,
                 "network destination could not be determined",
                 spec=spec,
+            )
+
+        # --- a command the operator declared safe (D41) ---------------------
+        # Placed here deliberately: after `never_auto` (so SSH, HID,
+        # DESTRUCTIVE and unapproved hosts have all had their say) and after
+        # the unknown-destination check. It allows in *every* mode, including
+        # `manual`, because the declaration is itself the operator's standing
+        # approval — written once, in a file they can read, rather than
+        # re-answered on a screen every time Nomad runs its own suite.
+        if declared and isinstance(command, str):
+            return await self._finalize(
+                request,
+                mode,
+                scope,
+                DecisionOutcome.ALLOW,
+                f"declared safe by the operator's command policy ('"
+                f"{self._command_policy.describe(command)}')",
+                spec=spec,
+                grant_source=GrantSource.AUTO,
             )
 
         # --- Nomad's own screen and memory are not the world (D35) ---------

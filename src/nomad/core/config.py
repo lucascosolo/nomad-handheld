@@ -253,6 +253,16 @@ class ToolsConfig(BaseModel):
     #: list is not fail-closed. Subdomains of an entry are covered, so
     #: `"python.org"` also allows `docs.python.org`.
     allowed_network_hosts: list[str] = Field(default_factory=list)
+    #: Command shapes that may run without a prompt, in any mode (D41). Each
+    #: entry is a token prefix — `"git status"` allows `git status --short`
+    #: and nothing else that starts with `git`. Empty by default, for the same
+    #: reason `allowed_network_hosts` is: a declared list is the operator's
+    #: standing approval, and nobody else gets to write it for them.
+    #:
+    #: This does not weaken `never_auto`. Every other rule still runs first —
+    #: an SSH target, HID output, a DESTRUCTIVE spec, an unapproved host — so
+    #: a listed command that reaches another machine is still blocked.
+    allowed_commands: list[str] = Field(default_factory=list)
 
 
 class AppsConfig(BaseModel):
