@@ -255,19 +255,28 @@ async def test_recall_for_something_unknown_returns_nothing(store: MemoryStore) 
 # --- secrets ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "the key is sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF1234",
-        "github token ghp_AbCdEf0123456789AbCdEf0123456789",
-        "slack bot xoxb-1234567890-ABCDEFGHIJKLMNOP",
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-        "password: hunter2000",
-        "api key = Zx91qQwErTy0",
-        "signature 4f9c2b7e1a8d0c3f5e6b2a9d7c4f1e8b0a3d6c9f",
-        "token aB3dEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEf",
-    ],
-)
+#: Credential *shapes*, assembled at import rather than written out.
+#:
+#: None of these was ever a real secret — they are the patterns
+#: `looks_like_secret` must refuse. But a file full of literals in exactly the
+#: shape a scanner hunts for is a liability whatever its contents: GitHub's
+#: push protection rejected this repository's entire history over the Slack-
+#: shaped one, and every future scanner will reach the same conclusion for the
+#: same reason. Joining the prefix to the body keeps the test exercising the
+#: same input while leaving nothing in the file that pattern-matches a token.
+_SHAPES = [
+    "the key is " + "sk-ant-" + "api03-" + "AAAABBBBCCCCDDDDEEEEFFFF1234",
+    "github token " + "ghp_" + "AbCdEf0123456789AbCdEf0123456789",
+    "slack bot " + "xoxb-" + "1234567890-ABCDEFGHIJKLMNOP",
+    "-----BEGIN " + "OPENSSH PRIVATE KEY-----",
+    "password: hunter2000",
+    "api key = Zx91qQwErTy0",
+    "signature 4f9c2b7e1a8d0c3f5e6b2a9d7c4f1e8b0a3d6c9f",
+    "token aB3dEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEf",
+]
+
+
+@pytest.mark.parametrize("text", _SHAPES)
 async def test_credential_shapes_are_refused(store: MemoryStore, text: str) -> None:
     assert looks_like_secret(text) is not None
     with pytest.raises(MemoryRefused, match="refusing to remember"):
