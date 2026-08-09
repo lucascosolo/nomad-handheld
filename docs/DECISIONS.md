@@ -417,6 +417,27 @@ in every mode including `auto`:
 A `can_use_tool` handler that errors, times out, or cannot classify **denies**.
 Fail closed, always.
 
+**Shadowed tools go through a `PreToolUse` hook instead.** An SDK allow-rule
+settles a call *before* `can_use_tool` fires, so a tool covered by one is never
+seen by the broker — the SDK says so out loud at connect time:
+
+```
+CanUseToolShadowedWarning: can_use_tool will not be invoked for: Skill.
+```
+
+`skills = "all"` is such a rule, and dropping it to close the gap would cost the
+laptop parity D19 exists for. So every shadowed tool is listed in
+`SHADOWED_TOOLS` in `claude_cli.py` and registered as a `PreToolUse` hook that
+calls the same bridge, returning an explicit `"allow"` or `"deny"` — never
+`"defer"`, which would hand the call straight back to the allow-rule. Unshadowed
+tools return `{}` so they are not decided twice. A shadowed tool must also carry
+a spec in `claude_tools.py`, or the broker denies it as an unknown tool and the
+fix silently removes the capability it was meant to preserve.
+
+The rule this generalises to: **if the SDK ever warns that a tool is shadowed,
+that tool is ungated until it is in `SHADOWED_TOOLS`.** The warning is the alarm;
+never silence it.
+
 *Why:* Constraining the toolset would produce constant missing-capability
 friction and would drift every time Claude Code adds a tool. Gating at the call
 site scales and keeps one enforcement point.

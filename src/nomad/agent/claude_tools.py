@@ -218,6 +218,25 @@ CLAUDE_CODE_TOOLS: tuple[ToolSpec, ...] = (
         permissions=frozenset({Permission.EXEC}),
         never_auto=True,
     ),
+    _spec(
+        "Skill",
+        "Load a skill's instructions into context.",
+        # `READ_ONLY` because that is literally what it does: read a file and
+        # put its text in the model's context. D39 is the reason this is not
+        # a heavier classification — **a skill is instructions, never
+        # authority**. Anything the skill then goes on to *do* — a shell
+        # command, a write, a fetch — arrives here separately and is judged on
+        # its own terms, so gating the load harder would buy nothing and cost
+        # the capability D19 exists to keep.
+        #
+        # It is declared at all because without a spec the broker denies it as
+        # an unknown tool, and the `PreToolUse` hook in `claude_cli.py` now
+        # routes it here. Before that hook, `skills = "all"` settled the call
+        # as an allow-rule and the broker never saw it — so this line and that
+        # hook are two halves of one fix and neither works alone.
+        risk=Risk.READ_ONLY,
+        permissions=frozenset({Permission.FS_READ}),
+    ),
 )
 
 

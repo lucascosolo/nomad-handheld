@@ -49,6 +49,28 @@ FORBIDDEN_ARGS: frozenset[str] = frozenset({"bare", "--bare", "continue", "--con
 #: Removed from the child environment, never merely left unset by hope (D20).
 STRIPPED_ENV_VARS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
+#: Tools an allow-rule settles before `can_use_tool` is consulted, and which a
+#: `PreToolUse` hook therefore has to catch instead (D21). The SDK names them
+#: in a `CanUseToolShadowedWarning` at connect time — if that warning ever
+#: lists a tool that is not here, this set is out of date and the invariant is
+#: quietly false again, which is exactly how this hole was introduced.
+#:
+#: `Skill` is shadowed by `skills = "all"`. Kept as a set rather than derived
+#: from the warning at runtime: a security boundary that reconfigures itself
+#: from a log message is not one anybody can review.
+SHADOWED_TOOLS: frozenset[str] = frozenset({"Skill"})
+
+
+def _pre_tool_use_deny(reason: str) -> dict[str, Any]:
+    """A `PreToolUse` denial in the SDK's shape. The only way this hook says no."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
 
 def child_environment(
     cli_config: ClaudeCliConfig, parent: dict[str, str] | None = None
@@ -145,6 +167,72 @@ class ClaudeCliBackend:
             return PermissionResultAllow(behavior="allow")
         return PermissionResultDeny(behavior="deny", message=decision.reason)
 
+    async def _pre_tool_use(self, payload: Any, tool_use_id: str | None, context: Any) -> Any:
+        """The other door into the broker, for calls `can_use_tool` never sees.
+
+        The SDK says so itself, on every connect::
+
+            CanUseToolShadowedWarning: can_use_tool will not be invoked for:
+            Skill. An allowed_tools entry that allows a whole tool
+            auto-approves it before the callback is consulted.
+
+        `skills = "all"` becomes an allow-rule, and an allow-rule settles the
+        call *before* `can_use_tool` fires — so CLAUDE.md's "every Claude Code
+        tool call routes through `can_use_tool` into Nomad's broker" was not
+        true for `Skill`. The exposure was bounded (a skill is instructions,
+        and anything it then *does* still hits the bridge) but a stated
+        non-negotiable that is quietly false is worse than a known gap.
+
+        Of the two fixes, this is the one that keeps capability: narrowing the
+        `skills` entry would restore the invariant by removing the thing D19
+        exists to preserve. A `PreToolUse` hook runs *ahead* of the allow-rule,
+        so the broker gets its say and `skills = "all"` stays.
+
+        Fails closed like everything else on this path: an unreadable payload
+        or a bridge that raises is a denial, because not knowing whether a
+        call is permitted is not the same as it being permitted.
+        """
+        name = ""
+        tool_input: dict[str, Any] = {}
+        try:
+            name = str(payload.get("tool_name") or "")
+            raw = payload.get("tool_input")
+            tool_input = dict(raw) if isinstance(raw, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - an unreadable hook payload denies
+            logger.error(
+                "PreToolUse payload could not be read; denying",
+                extra={"error": f"{type(exc).__name__}: {exc}"},
+            )
+            return _pre_tool_use_deny("the hook payload could not be read")
+
+        if not name:
+            return _pre_tool_use_deny("the hook payload named no tool")
+        if name not in SHADOWED_TOOLS:
+            # Everything else reaches `can_use_tool` normally. Deciding it
+            # twice would double every prompt and every audit record.
+            return {}
+
+        try:
+            decision = await self._bridge.can_use_tool(name, tool_input, context)
+        except Exception as exc:  # noqa: BLE001 - fail closed, always (D21)
+            logger.error(
+                "Bridge failed in PreToolUse; denying",
+                extra={"tool": name, "error": f"{type(exc).__name__}: {exc}"},
+            )
+            return _pre_tool_use_deny("permission bridge failed")
+
+        if decision.allow:
+            # `allow` and not `{}`: deferring would hand the call straight back
+            # to the allow-rule this hook exists to get in front of.
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": decision.reason,
+                }
+            }
+        return _pre_tool_use_deny(decision.reason)
+
     def _build_mcp_server(self) -> Any:
         """Wrap the router's tools as an in-process SDK MCP server."""
         from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -188,7 +276,7 @@ class ClaudeCliBackend:
         return {"type": "preset", "preset": "claude_code", "append": self._identity}
 
     def _options(self) -> Any:
-        from claude_agent_sdk import ClaudeAgentOptions
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
         _reject_forbidden_args(self._extra_args)
         mcp_server = self._build_mcp_server()
@@ -203,6 +291,17 @@ class ClaudeCliBackend:
             resume=self._resume_session_id,
             continue_conversation=False,
             can_use_tool=self._can_use_tool,
+            # The second door (D21). `can_use_tool` is not consulted for tools
+            # an allow-rule already settled, and `skills = "all"` is such a
+            # rule — so `Skill` reached the model without the broker seeing it.
+            # A `PreToolUse` hook runs ahead of the allow-rule, which is what
+            # lets the invariant hold *and* keeps the capability.
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(matcher=name, hooks=[self._pre_tool_use])
+                    for name in sorted(SHADOWED_TOOLS)
+                ]
+            },
             mcp_servers={SERVER_NAME: mcp_server} if mcp_server is not None else {},
             # Capability is deliberately NOT reduced here. Skills, `CLAUDE.md`,
             # plugins and the operator's MCP servers are a large part of why

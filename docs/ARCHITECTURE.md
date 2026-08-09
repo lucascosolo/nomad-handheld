@@ -245,6 +245,21 @@ tree (those go through D22's self-update path instead).
 A bridge that errors, times out, or cannot classify **denies**. Fail closed,
 always.
 
+One path does not arrive by `can_use_tool` at all. An SDK allow-rule settles a
+call before that callback fires, so a tool covered by one — `Skill`, under
+`skills = "all"` — bypasses the broker entirely. The SDK announces it at connect
+time as a `CanUseToolShadowedWarning`. Those tools are listed in
+`SHADOWED_TOOLS` and reach the same bridge through a `PreToolUse` hook instead:
+
+```
+Claude Code ──PreToolUse hook──▶ permission_bridge ──▶ PermissionBroker
+```
+
+The hook answers `"allow"`/`"deny"` explicitly (a `"defer"` would return the
+call to the allow-rule) and returns `{}` for anything unshadowed so it is not
+judged twice. **A shadowed name with no spec in `claude_tools.py` is denied as
+an unknown tool** — the two lists have to move together.
+
 Because the bridge sits *above* the backend, gating is backend-independent —
 a local model over Tailscale gets policed by exactly the same broker.
 

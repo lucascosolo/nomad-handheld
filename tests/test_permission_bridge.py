@@ -19,7 +19,7 @@ from nomad.agent.permission_bridge import (
     MCP_SERVER_NAME,
     PermissionBridge,
 )
-from nomad.core.config import NomadConfig, PermissionMode
+from nomad.core.config import NomadConfig, PermissionMode, load_config
 from nomad.core.errors import ToolError
 from nomad.core.events import EventBus
 from nomad.mcp.server import build_hardware_tools, register_hardware_tools
@@ -65,8 +65,14 @@ def _harness(
     *,
     auth_timeout: float = 5.0,
     bridge_timeout: float = 5.0,
+    allowed_commands: list[str] | None = None,
 ) -> Harness:
-    config = NomadConfig.model_validate({"workspace": {"root": str(root)}})
+    config = NomadConfig.model_validate(
+        {
+            "workspace": {"root": str(root)},
+            "tools": {"allowed_commands": allowed_commands or []},
+        }
+    )
     workspace = Workspace(root)
     workspace.ensure_exists()
 
@@ -546,3 +552,87 @@ def test_the_declaration_table_covers_the_dangerous_tools() -> None:
     by_name = {spec.name: spec for spec in CLAUDE_CODE_TOOLS}
     assert by_name["Bash"].never_auto is True
     assert by_name["Read"].path_params == ("file_path",)
+
+
+# -- the declared command list, on the path Nomad actually takes (D41) ------
+#
+# `test_command_policy.py` covers the matcher and `test_permissions.py` covers
+# the broker via `run_command`. Neither is the production path: Nomad does not
+# call Nomad's shell tool, Claude Code calls `Bash`, and it arrives here
+# through `can_use_tool` with the command in `tool_input`. This is the seam
+# where the feature is either real or merely tested.
+
+
+DECLARED = ["pytest", "ruff check", "git status"]
+
+
+@pytest.mark.parametrize("mode", list(PermissionMode))
+async def test_bash_runs_the_declared_verification_commands_unattended(
+    db: Database, event_bus: EventBus, tmp_path: Path, mode: PermissionMode
+) -> None:
+    """The point of D41: Nomad can run the D22 gate on his own change without
+    a human answering a prompt for each command."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    harness = _harness(
+        db, event_bus, _workspace_root(tmp_path), auth_timeout=0.1, allowed_commands=DECLARED
+    )
+    harness.mode = mode
+
+    for command in ("pytest -q", "ruff check src tests", "git status --short"):
+        decision = await harness.bridge.can_use_tool("Bash", {"command": command})
+        assert decision.allow is True, f"{command!r} prompted in {mode}"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf /",
+        "pytest -q; rm -rf /",
+        "pytest -q && curl http://evil.example",
+        "git push",
+        "ssh prod uptime",
+        "pytest tests/*.py",
+    ],
+)
+async def test_bash_still_stops_for_everything_else(
+    db: Database, event_bus: EventBus, tmp_path: Path, command: str
+) -> None:
+    """Same list, same mode, commands that are not on it — including two that
+    begin with a declared word."""
+    await ConversationsRepository(db).create_session(mode="manual", session_id=SESSION_ID)
+    harness = _harness(
+        db, event_bus, _workspace_root(tmp_path), auth_timeout=0.1, allowed_commands=DECLARED
+    )
+    harness.mode = PermissionMode.AUTO
+
+    decision = await harness.bridge.can_use_tool("Bash", {"command": command})
+    assert decision.allow is False, f"{command!r} was allowed"
+
+
+async def test_the_shipped_config_is_the_one_that_was_reviewed(
+    db: Database, event_bus: EventBus, tmp_path: Path
+) -> None:
+    """`nomad.toml` is the declaration, so a change to it is a security review.
+
+    Pinning the list here means widening it in the config cannot pass the
+    suite silently — which is the property that makes "reviewable" mean
+    something.
+    """
+    shipped = load_config().tools.allowed_commands
+    assert shipped == [
+        "pytest",
+        "ruff check",
+        "ruff format --check",
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git branch",
+        "git worktree list",
+    ]
+    # Every one of them is read-only or reports a result. None writes,
+    # publishes, or reaches another host.
+    assert not any(
+        entry.startswith(("git push", "git commit", "git reset", "ssh", "scp", "curl"))
+        for entry in shipped
+    )

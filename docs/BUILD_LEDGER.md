@@ -9,6 +9,40 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (late) — the shadowed-tool hole in D21 is closed
+
+**`Skill` now reaches the broker.** It never did: `skills = "all"` becomes an
+SDK allow-rule, an allow-rule settles a call *before* `can_use_tool` fires, and
+the SDK said so on every connect (`CanUseToolShadowedWarning`). The fix is the
+one the previous entry argued for — a `PreToolUse` hook over a `SHADOWED_TOOLS`
+set — so `skills = "all"` stays and the laptop parity D19 exists for stays with
+it. The other option, narrowing the entry, would have restored the invariant by
+removing capability, which is the exact move D21 says was never the thing to do.
+
+Three details that are load-bearing and were easy to get wrong:
+
+1. **The hook answers `"allow"`, never `"defer"`.** Deferring hands the call
+   straight back to the allow-rule this hook exists to get in front of — a fix
+   that looks right and changes nothing.
+2. **An unshadowed tool returns `{}`**, so `Bash` is not judged in two places
+   and does not produce two prompts and two audit records for one call.
+3. **`Skill` also needed a spec in `claude_tools.py`.** Without it the broker
+   denies it as an unknown tool, and the fix meant to preserve the capability
+   silently deletes it. It is `READ_ONLY`/`FS_READ` on D39's reasoning: a skill
+   is instructions, never authority, and whatever it goes on to *do* arrives at
+   the bridge separately.
+
+A payload naming no tool denies, and a bridge that raises denies — fail closed,
+tested rather than asserted in prose. `test_every_shadowed_tool_is_classified`
+is the tripwire for the next shadowed tool: if the SDK ever warns about one,
+that tool is ungated until it is in the set, and the warning is the alarm.
+
+D21 and `ARCHITECTURE.md` now both describe this path; the earlier text claimed
+an invariant that had a hole in it.
+
+Suite: **958 passed** (4:19 on the laptop). Not yet deployed — the Pi is
+powered down, so four commits are waiting on `git push pi main`.
+
 ### 2026-08-09 (evening) — a charter, a command policy, and a mode selector
 
 **`NOMAD.md` now says what the device is for.** It described how to speak and
@@ -71,7 +105,7 @@ Suite: 870 passed. Deployed to the Pi and the service restarted.
 **Still open, in priority order:** the mode selector (manual / smart / auto)
 the operator asked for; a reviewable `CommandPolicy` so Nomad can run his own
 suite without a prompt per command (`Bash` is `never_auto`, which is what
-blocks unattended self-improvement today); the D21 `Skill` shadowing hole; and
+blocks unattended self-improvement today); and
 making a *tap* select a choice option — the firmware owns layout, so it should
 report which option was hit over a new message type rather than the Pi
 duplicating geometry (D13 forbids synthesizing navigation from touch).
