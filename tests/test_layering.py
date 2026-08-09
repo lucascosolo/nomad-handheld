@@ -104,10 +104,17 @@ ALLOWED: dict[str, set[str]] = {
     # Forward-declared: `api` does not exist yet, and when it does it is a
     # view like any other, allowed to see everything and seen by nothing.
     "api": set(EVERYTHING),
-    # `app.py` and `__main__.py`. The composition root knows the whole device
-    # — that is its job, and it is the only module that may. `app` is in the
-    # set because `__main__` imports `app`; both are top-level modules.
-    "<root>": EVERYTHING | {"app"},
+    # `app.py`, `__main__.py`, `cli.py` and `status.py`. The composition root
+    # knows the whole device — that is its job, and it is the only module that
+    # may. `app`, `cli` and `status` are in the set because these top-level
+    # modules import each other: `__main__` -> `cli` -> `app` -> `status`.
+    #
+    # `status` earns the top layer rather than living under `view` for the same
+    # reason `app` does: a report on this device reaches the session, the
+    # queue, the ledger and the drivers at once, and `view` may not see
+    # `notifications`, `offline` or `resources`. Pushing it down would mean
+    # widening three edges to avoid widening one.
+    "<root>": EVERYTHING | {"app", "cli", "status"},
 }
 
 #: Nothing imports `api` (CLAUDE.md). Vacuous today; the point is that it stays
@@ -241,7 +248,14 @@ def test_hardware_does_not_import_its_own_facade() -> None:
         assert "mcp" not in _nomad_imports(path), f"{path.relative_to(SRC)} imports mcp"
 
 
-def test_the_composition_root_is_the_only_top_level_module() -> None:
-    """Everything else lives in a package with a declared layer."""
+def test_only_the_composition_root_and_its_two_faces_are_top_level() -> None:
+    """Everything else lives in a package with a declared layer.
+
+    The list is short on purpose and stays short: a module here is one that may
+    import the entire tree, so adding one is a decision, not a convenience.
+    `cli` and `status` qualify because both speak *about* the whole device —
+    the terminal face and the report it renders — and neither can be pushed
+    into a package without widening three edges to avoid widening one.
+    """
     top_level = sorted(p.name for p in SRC.glob("*.py"))
-    assert top_level == ["__init__.py", "__main__.py", "app.py"]
+    assert top_level == ["__init__.py", "__main__.py", "app.py", "cli.py", "status.py"]

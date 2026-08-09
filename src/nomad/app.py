@@ -68,6 +68,7 @@ from nomad.protocol import Link, LinkKind, create_transport
 from nomad.resources.governor import ResourceGovernor
 from nomad.resources.workload import InteractiveWorkload
 from nomad.skills.library import SkillLibrary, default_seed_root
+from nomad.status import STATUS_WRITER, collect_status, status_rows
 from nomad.storage.db import Database
 from nomad.storage.migrations import migrate
 from nomad.storage.repositories.conversations import ConversationsRepository
@@ -583,6 +584,16 @@ class NomadApp:
     # -- lifecycle ---------------------------------------------------------
 
     @property
+    def config(self) -> NomadConfig:
+        """The config this device was built from.
+
+        Exposed read-only because `nomad.status` has to report what was asked
+        for alongside what is actually running, and reaching into `_config`
+        from outside would make every reader a maintainer of this class.
+        """
+        return self._config
+
+    @property
     def state(self) -> ComponentState:
         return self._state
 
@@ -603,6 +614,7 @@ class NomadApp:
             self._state = ComponentState.FAILED
             raise
         self._state = ComponentState.STARTED
+        await self._show_status_card()
         logger.info(
             "Nomad started",
             extra={
@@ -617,6 +629,34 @@ class NomadApp:
                 "workloads": len(self.governor.inventory()) if self.governor is not None else 0,
             },
         )
+
+    async def _show_status_card(self) -> None:
+        """The first thing on the glass: what this device is and whether it works.
+
+        F1 promised the screen is never blank; this is what makes that promise
+        say something. It draws through `ScreenOwner` like every other writer
+        (D36), so a boot that lands while an authorization prompt is up is
+        suppressed rather than painting over the question.
+
+        `probe=False` deliberately: the backend has already connected or
+        failed by the time this runs, so spawning a CLI to ask `--version` a
+        second time would put several seconds between power-on and the screen
+        saying anything. The subprocess probe belongs to `nomad status`, which
+        is a command someone is waiting on.
+
+        A failure here is logged and dropped. A device that refuses to finish
+        booting because it could not draw a summary of itself has turned a
+        cosmetic problem into an outage.
+        """
+        try:
+            report = await collect_status(self, probe=False)
+            await self.screen.view(STATUS_WRITER).show_card(
+                self._config.core.name,
+                "ready" if report.backend.ready else "backend down",
+                status_rows(report),
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail a boot over a status card
+            logger.warning("Could not draw the status card", extra={"error": str(exc)})
 
     async def stop(self) -> None:
         """Stop whatever is running. Safe after a partial or failed start.

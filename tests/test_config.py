@@ -44,6 +44,25 @@ def test_env_overrides_local_and_base(tmp_path: Path) -> None:
     assert config.api.port == 7000
 
 
+def test_the_config_pointer_is_not_itself_an_override(tmp_path: Path) -> None:
+    """`NOMAD_CONFIG` selects which file to read; it is not a key inside one.
+
+    Without the exclusion it parses as an override of a top-level `config` key
+    and `extra="forbid"` rejects the entire file — so the variable documented
+    as "point Nomad at another config" was a guaranteed startup failure, and
+    the only reason it went unnoticed is that nothing had ever set it. Passing
+    the whole environment to `load_config` is the normal case, so the fix
+    belongs here rather than in each caller.
+    """
+    base = tmp_path / "elsewhere.toml"
+    base.write_text('[core]\nname = "pointed-at"\n')
+
+    config = load_config(base, env={"NOMAD_CONFIG": str(base), "NOMAD_API__PORT": "7001"})
+
+    assert config.core.name == "pointed-at"
+    assert config.api.port == 7001
+
+
 def test_env_var_nested_creates_sections(tmp_path: Path) -> None:
     base = tmp_path / "nomad.toml"
     base.write_text('[core]\nname = "base"\n')

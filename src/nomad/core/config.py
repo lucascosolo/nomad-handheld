@@ -25,6 +25,18 @@ DEFAULT_CONFIG_PATH = Path("nomad.toml")
 LOCAL_CONFIG_SUFFIX = ".local.toml"
 ENV_PREFIX = "NOMAD_"
 
+#: Points at a config file other than `./nomad.toml`. The layered local
+#: override and the `NOMAD_*` overrides still apply on top of whatever it
+#: names.
+CONFIG_PATH_ENV = "NOMAD_CONFIG"
+
+#: `NOMAD_*` variables that select *which* config to read rather than setting a
+#: value inside one. Without this, `NOMAD_CONFIG=/etc/nomad.toml` parses as an
+#: override of a top-level key named `config` and `extra="forbid"` rejects the
+#: whole file — so pointing at a config was a startup failure, and the only
+#: reason nobody hit it is that nothing had ever set the variable.
+NON_OVERRIDE_ENV_VARS = frozenset({CONFIG_PATH_ENV})
+
 
 class PermissionMode(StrEnum):
     """Session permission mode (D14)."""
@@ -519,7 +531,7 @@ def _env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
     """Turn NOMAD_FOO__BAR=1 into {"foo": {"bar": 1}}."""
     overrides: dict[str, Any] = {}
     for key, raw_value in env.items():
-        if not key.startswith(ENV_PREFIX):
+        if not key.startswith(ENV_PREFIX) or key in NON_OVERRIDE_ENV_VARS:
             continue
         path = key[len(ENV_PREFIX) :].lower().split("__")
         if not path or path == [""]:
