@@ -52,7 +52,15 @@ static uint32_t lastSeqSeen = 0;
 static uint32_t framesRendered = 0;
 
 // Landscape. 320x240 logical, matching `[display] width/height` in nomad.toml.
-static const int kRotation = 1;
+//
+// 3 rather than 1, measured on the assembled device rather than derived from
+// the panel datasheet: rotation 1 came out upside down once the board was in
+// its case, because which way "up" is depends on how the glass is mounted and
+// no controller register knows that. 3 is the same landscape axis, rotated
+// 180. If a future case turns the board over again, this constant is the one
+// line to change — and the touch mapping below follows it automatically,
+// because `setRotation` transforms both.
+static const int kRotation = 3;
 
 // A deliberately plain palette: this is a status surface read at arm's length
 // in whatever light the operator is standing in, not a UI.
