@@ -159,6 +159,33 @@ async def test_remote_llm_says_it_is_not_implemented(tmp_path: Path) -> None:
     assert "not implemented" in health.detail
 
 
+async def test_an_installed_but_unauthenticated_cli_is_not_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshly provisioned device looks healthy and can do nothing.
+
+    The CLI installer writes `~/.claude.json` on a machine nobody has logged in
+    on. Counting it as a credential reported `ready` for a Pi whose CLI answers
+    `Not logged in · Please run /login` — the exact shape of failure this
+    module exists to prevent, found by running the probe against a real device
+    rather than by reading it.
+    """
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude.json").write_text("{}")
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    config = _config(tmp_path, agent={"backend": "claude_cli"})
+    health = await probe_backend(config)
+    assert health.auth == "none"
+    assert health.ready is False
+
+    # And the credential file itself is what flips it.
+    (home / ".claude" / ".credentials.json").write_text("{}")
+    assert (await probe_backend(config)).auth == "cli-credentials"
+
+
 async def test_the_probe_never_reports_an_api_key_as_the_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

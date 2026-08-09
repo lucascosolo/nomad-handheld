@@ -57,7 +57,14 @@ VERSION_PROBE_TIMEOUT_S = 10.0
 #: only — never read, never parsed, never logged. Knowing a file exists is
 #: enough to answer "will auth be there", and it is all this module wants to
 #: know about a secret.
-_CLI_CREDENTIAL_PATHS = (".claude/.credentials.json", ".claude.json")
+#:
+#: **`~/.claude.json` is deliberately not in this list.** The installer writes
+#: it on a machine nobody has ever logged in on, so counting it reported
+#: `auth: cli-credentials` and `ready` for a freshly provisioned Pi whose CLI
+#: answers `Not logged in · Please run /login` — a device that looks healthy
+#: and can do nothing, which is the single failure this module exists to
+#: prevent. Only the credential file itself counts.
+_CLI_CREDENTIAL_PATHS = (".claude/.credentials.json",)
 
 
 class BackendHealth(BaseModel):
@@ -178,7 +185,7 @@ async def _probe_claude_cli(cli: ClaudeCliConfig) -> BackendHealth:
         # device brittle against an upgrade nobody asked for (D20).
         notes.append(f"expected {cli.expected_cli_version}")
     if auth == "none":
-        notes.append(f"no credential found; set {cli.oauth_token_env} or run `claude setup-token`")
+        notes.append(f"not logged in; run `claude` and /login, or set {cli.oauth_token_env}")
     return BackendHealth(
         backend="claude_cli",
         ready=auth != "none",
