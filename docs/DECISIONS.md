@@ -1001,6 +1001,14 @@ powered up, `lsusb` and ALSA report what is actually there:
 | Speaker | The Pi's own 3.5 mm jack, `bcm2835 Headphones`, ALSA card 0 (HDMI also present) |
 | ESP32-S3 | **Not on the Pi's USB bus at all.** No Espressif VID, no `/dev/ttyACM*` |
 
+**Corrected 2026-08-08, later the same day:** the ESP32-S3 row above is stale.
+The module was plugged in with the cable it shipped with and enumerates as
+`303a:1001` at `/dev/ttyACM0`. It is on the bus; the row was measured before the
+cable was connected. Note what that does *not* prove: `303a:1001` is the chip's
+native USB Serial/JTAG peripheral, present from silicon regardless of firmware,
+so presence on the bus says nothing about what is running. See the measured
+table in `ARCHITECTURE.md`.
+
 So audio is already two ordinary ALSA devices on the Pi, and the composite
 CDC-plus-UAC firmware described above is **not on the critical path for voice**.
 It stays recorded as the design *if* audio ever moves onto the module, because
@@ -1012,9 +1020,15 @@ it against protocols with mock defaults — the real driver is a leaf that opens
 a sound device, and it now has a specific device to open. What it does change is
 risk: no firmware work stands between here and a working microphone.
 
-*Still unverified:* whether the Hosyond module (UPC 712490971738) has a usable
-mic and amplifier of its own. That question is now optional rather than
-blocking, and should not be answered by guessing.
+*Answered 2026-08-08:* the Hosyond module (UPC 712490971738) **does** have both.
+Its vendor pin map documents an audio block on IO1 (enable), IO4/IO5/IO7 and
+IO6 (DOUT) / IO8 (DIN), an on-board microphone, and a 1.25 mm speaker socket.
+So the composite-CDC-plus-UAC branch above is a real option, not a hypothetical.
+
+It is still not the *chosen* option. The C-Media USB mic on the Pi needs no
+firmware at all, and the module's audio needs a composite USB descriptor written
+and flashed. Recorded as available; the decision belongs to chunk X, and the
+software is unaffected either way because the driver is a leaf behind a protocol.
 
 **Who may open the microphone.** The model may speak. D35 already settled the
 shape of that argument for the screen — Nomad's own output surface is not the

@@ -17,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from nomad.core.errors import ConfigError
 
@@ -258,10 +258,22 @@ class SkillsConfig(BaseModel):
     every turn, so it is the one part of the skill system whose cost scales
     with the size of the library rather than with use — which is exactly the
     tax D33 removed from memory and this must not reintroduce.
+
+    Two roots, because skills have two origins. `root` is where *authored*
+    skills go — under `var/`, writable and gitignored (D25). `seed_root` is the
+    committed library that ships with the device, so a fresh checkout is not a
+    device that has forgotten how to do everything. Seeds load first and
+    authored skills load over them, so a name collision resolves in favour of
+    the operator without anyone editing the source tree.
     """
 
     enabled: bool = True
     root: str = "var/skills"
+    #: `None` means "the `skills/` directory beside NOMAD.md", resolved by
+    #: `nomad.skills.default_seed_root()`. Set it to a path when that guess is
+    #: wrong (an installed rather than a checked-out tree), or to `""` to ship
+    #: no seeds at all and run purely on authored skills.
+    seed_root: str | None = None
     index_budget_chars: int = 800
 
 
@@ -273,9 +285,31 @@ class SettingsConfig(BaseModel):
 
 
 class DisplayConfig(BaseModel):
+    #: The primary surface — the device's own face.
     driver: str = "mock"
+    #: Additional surfaces the same screen state is mirrored onto, in order.
+    #: Empty means "one screen", which is the behaviour that predates this and
+    #: stays the default. `headless` here is how an HDMI monitor or a phone
+    #: gets the same view over HTTP without a second renderer existing (D36
+    #: still arbitrates writers; mirroring is beneath it).
+    mirror: list[str] = Field(default_factory=list)
     width: int = 320
     height: int = 240
+
+    @model_validator(mode="after")
+    def _no_duplicate_surfaces(self) -> DisplayConfig:
+        """Two surfaces of the same kind would double every write for no gain,
+        and for `esp32` specifically would mean two drivers on one link."""
+        names = [self.driver, *self.mirror]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"display surfaces must be distinct; repeated: {sorted(duplicates)}")
+        return self
+
+    @property
+    def surfaces(self) -> list[str]:
+        """Every surface, primary first."""
+        return [self.driver, *self.mirror]
 
 
 class ViewConfig(BaseModel):
@@ -355,9 +389,29 @@ class SensorsConfig(BaseModel):
 
 
 class TransportConfig(BaseModel):
+    #: `mock` | `loopback` | `serial`. Mock is the default everywhere (D9).
     kind: str = "mock"
     port: str = ""
     baudrate: int = 115200
+
+    @field_validator("kind")
+    @classmethod
+    def _known_kind(cls, value: str) -> str:
+        known = ("mock", "loopback", "serial")
+        if value not in known:
+            raise ValueError(f"transport kind must be one of {known}, got '{value}'")
+        return value
+
+    @model_validator(mode="after")
+    def _serial_needs_a_port(self) -> TransportConfig:
+        """A serial transport with no port is a misconfiguration, not a default.
+
+        Catching it here means the error names the config file at startup,
+        rather than surfacing much later as a transport that cannot open.
+        """
+        if self.kind == "serial" and not self.port:
+            raise ValueError("a serial transport requires a non-empty 'port'")
+        return self
 
 
 class TransportsConfig(BaseModel):

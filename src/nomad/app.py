@@ -47,7 +47,7 @@ from nomad.core.config import NomadConfig
 from nomad.core.events import EventBus
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
-from nomad.hardware.selection import create_battery_driver, create_display_driver
+from nomad.hardware.selection import create_battery_driver, create_display_stack
 from nomad.input.choice import (
     ExternalChoicePrompter,
     InputChoicePrompter,
@@ -64,9 +64,10 @@ from nomad.memory.store import MemoryStore
 from nomad.notifications.delivery import NotificationDelivery, ScreenNotificationSink
 from nomad.notifications.queue import NotificationQueue
 from nomad.offline import IntentLedger, OfflineResponder, PromotionAnalyst, default_router
+from nomad.protocol import Link, LinkKind, create_transport
 from nomad.resources.governor import ResourceGovernor
 from nomad.resources.workload import InteractiveWorkload
-from nomad.skills.library import SkillLibrary
+from nomad.skills.library import SkillLibrary, default_seed_root
 from nomad.storage.db import Database
 from nomad.storage.migrations import migrate
 from nomad.storage.repositories.conversations import ConversationsRepository
@@ -191,7 +192,12 @@ class NomadApp:
         # rule this bends is about *side effects*, and there are none.
         self.skills = self._build_skills()
 
-        self.display = create_display_driver(config.display)
+        # The link to the ESP32-S3, built only when a surface actually needs
+        # one. `create_display_stack` raises without it, and a Link on a mock
+        # transport that nothing talks to would be a reader task burning a
+        # wakeup forever on a laptop build.
+        self.esp32_link = self._build_esp32_link()
+        self.display = create_display_stack(config.display, link=self.esp32_link)
         self.battery = create_battery_driver(config.battery)
         # Output only, and that is not an omission. D37 gives the device a
         # `speak` tool and deliberately no `listen` tool at any price, so the
@@ -266,6 +272,11 @@ class NomadApp:
             workspace=self.workspace,
             memory=self.memory if config.memory.enabled else None,
             hardware_tools=self.agent_tools,
+            # D39's always-in-context half. Without this the library is a
+            # directory the model is never told about and `load_skill` a tool
+            # it has no reason to call — progressive disclosure with nothing
+            # disclosed.
+            skill_index=self.skill_index(),
         )
         # Built after the session and from *its* broker and executor, which is
         # the load-bearing half of chunk O: an onboard answer is a `ToolRequest`
@@ -317,25 +328,55 @@ class NomadApp:
             self._registry.register(component)
 
     def _build_skills(self) -> SkillLibrary | None:
-        """Load the skill library, or say there is none (D39)."""
+        """Load the skill library from both its roots, or say there is none (D39).
+
+        **Seeds first, authored second, and the order is the policy.**
+        `SkillLibrary.add` keys by name, so the second load wins: a skill the
+        operator authored under `var/skills` shadows a shipped one of the same
+        name. That is what lets somebody disagree with a seed without editing
+        Nomad's own source tree — the thing D22 makes deliberately expensive.
+
+        Committing the seeds is what stops this whole subsystem being inert.
+        `var/` is gitignored, so a fresh checkout has no `var/skills` at all;
+        a library of zero renders no index and `build_skill_tools` returns
+        `[]`, which means progressive disclosure over a directory nothing can
+        reach. See `nomad.skills.default_seed_root` for why they live beside
+        `NOMAD.md` rather than under `var/`.
+
+        Neither root existing is not an error — that is a device with no
+        skills, which is a real state and must boot.
+        """
         skills = self._config.skills
         if not skills.enabled:
             return None
         library = SkillLibrary(index_budget_chars=skills.index_budget_chars)
+        seed_root = (
+            Path(skills.seed_root) if skills.seed_root is not None else default_seed_root()
+        )
+        seed_skipped = library.load_directory(seed_root) if skills.seed_root != "" else []
+        seeded = len(library.names())
         skipped = library.load_directory(Path(skills.root))
         logger.info(
             "Skill library loaded",
-            extra={"root": skills.root, "skills": len(library.names()), "skipped": len(skipped)},
+            extra={
+                "seed_root": str(seed_root),
+                "seeded": seeded,
+                "root": skills.root,
+                "skills": len(library.names()),
+                "skipped": len(seed_skipped) + len(skipped),
+            },
         )
         return library
 
     def skill_index(self) -> str:
-        """The block a prompt injects (D39). Empty when there is no library.
+        """The block injected into every prompt (D39). Empty with no library.
 
-        Exposed rather than injected: the identity Claude Code receives is
-        assembled inside `agent/`, and nothing there takes a hook today. This
-        is the composition root holding the index where the injection will
-        reach for it, which is the half of the wiring that belongs to F3.
+        Rendered here and handed to `AgentSession` as a `str`, because
+        `tests/test_layering.py` does not let `agent` import `nomad.skills` —
+        the session can be told what the skills are and can never ask. That is
+        the same one-way shape the permission path has: a skill body reaches
+        the model's context and nothing else, so it cannot become an input to
+        an authorization decision (D39).
         """
         return self.skills.render_index() if self.skills is not None else ""
 
@@ -360,11 +401,28 @@ class NomadApp:
             governor.register(PromotionAnalyst(self.intent_ledger, config=self._config.offline))
         return governor
 
-    def _build_view(self) -> ScreenServer | None:
-        """The browser view, for a headless display and nothing else.
+    def _build_esp32_link(self) -> Link | None:
+        """A `Link` to the ESP32-S3, or `None` when no surface needs one.
 
-        An ESP32 has its own glass; serving a second copy of it over HTTP
-        would be a network service nobody asked for.
+        Built here rather than inside `create_display_stack` because a link is
+        a *component* — it owns a reader task and has to be started and stopped
+        in order with everything else — and the composition root is the only
+        thing that may know that (D9's selection functions return drivers, not
+        lifecycles).
+        """
+        if "esp32" not in self._config.display.surfaces:
+            return None
+        transport = create_transport(self._config.transports.esp32, name="esp32")
+        return Link(transport, kind=LinkKind.DISPLAY, name="esp32")
+
+    def _build_view(self) -> ScreenServer | None:
+        """The browser view, served whenever some surface is headless.
+
+        An ESP32 has its own glass, so a device whose *only* screen is the
+        panel does not need an HTTP copy of it. But `[display].mirror` exists
+        precisely so a monitor plugged into the Pi can show the same state, and
+        the browser page is how that happens without a second renderer — so the
+        test is "is any surface headless", not "is the primary one".
 
         When the display *is* headless the page is also the only input device
         the machine has, so it is handed two write callables. It gets callables
@@ -373,9 +431,9 @@ class NomadApp:
         the introducing.
         """
         view = self._config.view
-        if not view.enabled or self._config.display.driver not in _HEADLESS_DRIVERS:
+        if not view.enabled or not self._headless_surfaces():
             return None
-        display = self.display
+        display = self._headless_display()
 
         def screen_html() -> str:
             # Read live, from the HTTP thread. `HeadlessDisplay` rebinds one
@@ -462,15 +520,44 @@ class NomadApp:
         rather than a timeout, because retrying can never help (D32).
         """
         show = make_show(self.screen.view(AUTH_PROMPT_WRITER))
+        # Keyed on the *primary* surface, not on any of them: the question is
+        # "how does the operator answer", and that is decided by the device's
+        # own face. A mirrored HDMI monitor adds a place to read the prompt, not
+        # a way to answer it — an esp32 primary still answers with the joystick.
         if self._config.display.driver in _HEADLESS_DRIVERS:
             if self._config.view.enabled:
                 return ExternalChoicePrompter(show=show)
             return NullChoicePrompter(show=show)
         return InputChoicePrompter(self.input, show=show)
 
+    def _headless_surfaces(self) -> list[str]:
+        """Surfaces with no glass of their own, and so the ones a browser page
+        is the renderer for."""
+        return [s for s in self._config.display.surfaces if s in _HEADLESS_DRIVERS]
+
+    def _headless_display(self) -> object:
+        """The headless surface's own driver, which owns the HTML the view serves.
+
+        With mirroring, `self.display` may be a fanout — and there is no
+        meaningful way to mirror `.screen.html`, so the view has to reach the
+        one surface that has it.
+        """
+        fanout_surface = getattr(self.display, "surface", None)
+        if fanout_surface is not None:
+            for name in self._headless_surfaces():
+                found = fanout_surface(name)
+                if found is not None:
+                    return found
+        return self.display
+
     def _ordered_components(self) -> list[Component]:
         """Start order. Stop order is exactly its reverse (`ComponentRegistry`)."""
         components: list[Component] = [self.db, self.migrator, self.bus]
+        if self.esp32_link is not None:
+            # Before anything that draws. A display write to a link that has
+            # not started raises, and the first thing F1 guarantees is that the
+            # screen is never blank — so the cable comes up before the renderer.
+            components.append(self.esp32_link)
         if self.view is not None:
             components.append(self.view)
         # The renderer and the authorization prompt subscribe, so both must be

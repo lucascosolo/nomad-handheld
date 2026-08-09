@@ -41,9 +41,14 @@ def create_display_driver(config: DisplayConfig, *, link: Link | None = None) ->
 
     `esp32` is imported lazily inside its branch — that is what lets `mock`
     and `headless` run with nothing but the standard library.
-    """
-    kind = config.driver
 
+    This builds the **primary surface only**. For the whole screen, including
+    any mirrors, use `create_display_stack`.
+    """
+    return _create_surface(config.driver, config, link=link)
+
+
+def _create_surface(kind: str, config: DisplayConfig, *, link: Link | None = None) -> object:
     if kind in ("mock", "headless"):
         return HeadlessDisplay()
 
@@ -58,6 +63,31 @@ def create_display_driver(config: DisplayConfig, *, link: Link | None = None) ->
         return Esp32Display(link, width=config.width, height=config.height)
 
     raise HardwareError(f"Unknown display driver '{kind}'", {"driver": kind})
+
+
+def create_display_stack(config: DisplayConfig, *, link: Link | None = None) -> object:
+    """Build every surface in `[display]` and return one `DisplayDriver`.
+
+    With no mirrors this returns the primary driver **unwrapped**, so the
+    single-screen path is byte-for-byte what it was before mirroring existed —
+    no fanout object, no `asyncio.gather`, nothing new to go wrong on the
+    configuration every test uses.
+
+    With mirrors it returns a `DisplayFanout`, which satisfies the same
+    protocol. Callers above this line cannot tell the difference, and that is
+    the point: `ScreenOwner` arbitrates writers and is indifferent to how many
+    pieces of glass are behind them (D36).
+    """
+    if not config.mirror:
+        return _create_surface(config.driver, config, link=link)
+
+    from nomad.hardware.fanout import DisplayFanout, Surface
+
+    surfaces = [
+        Surface(name=kind, driver=_create_surface(kind, config, link=link))
+        for kind in config.surfaces
+    ]
+    return DisplayFanout(surfaces)
 
 
 def create_battery_driver(config: BatteryConfig) -> object:

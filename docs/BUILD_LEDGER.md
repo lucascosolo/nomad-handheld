@@ -149,6 +149,55 @@ them. More files meant more places for the contract to drift.
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | F3 | Remaining wire-up: HTTP API, README, full layering sweep | `src/nomad/api/**`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |
+| T | **Serial transport:** a real `SerialTransport` behind the existing `Transport` protocol, the `pyserial-asyncio` extra, and the config plumbing that makes `[transports.esp32]` mean something | `src/nomad/protocol/transport.py`, `src/nomad/protocol/selection.py`, `src/nomad/core/config.py`, `pyproject.toml`, `tests/test_protocol.py` | `pytest tests/test_protocol.py tests/test_config.py` | **DONE** 2026-08-08 — 820 pass, ruff clean |
+| T2 | **Many surfaces, one screen:** `DisplayFanout`, `[display].mirror`, and the `Link` the composition root never built — so `driver = "esp32"` constructs, and an HDMI monitor sees the same state | `src/nomad/hardware/fanout.py`, `src/nomad/hardware/selection.py`, `src/nomad/app.py`, `tests/test_app.py` | `pytest tests/test_app.py tests/test_hardware.py` | **DONE** 2026-08-08 |
+| W | **ESP32-S3 firmware:** LVGL app speaking D30's framing over native USB CDC; renders `display.state`, emits touch as logical input | `firmware/**` | flashes; `display.state` round-trips against the Pi | TODO |
+| X | **Audio on the module (deferred by the operator until after the screen works):** composite CDC+UAC2 in the firmware, an ALSA-backed recorder and speaker behind D37's protocols, and a real `Transcriber`. See "The audio question" below — the research is done, the decision is not | `firmware/**`, `src/nomad/audio/**`, `tests/test_audio.py` | `pytest tests/test_audio.py`; an utterance round-trips to text | DEFERRED |
+
+### The screen goal (2026-08-08)
+
+Goal: **the module displays a Nomad status screen.** What the investigation
+established, so it is not rediscovered:
+
+- The panel, backlight, SPI and LVGL **all work** — the board arrived running
+  stock `lv_demo_widgets` at 100 FPS. No hardware debugging is owed.
+- `[transports.esp32].kind` is **decorative**: nothing in `src/` reads
+  `config.transports` at all. Setting it to `serial` changes no behaviour.
+- There is **no serial transport** — `protocol/transport.py` ships only
+  `Loopback` and `Mock`, deliberately (its own docstring says so).
+- `create_display_driver` raises unless handed a `Link`, and `app.py` calls it
+  without one. So `driver = "esp32"` cannot work today even with firmware.
+- **Nomad is not on the Pi at all.** Empty home directory, no service.
+
+Ordering is **T → T2 → W → H**, and T was deliberately first: it is entirely
+board-independent, testable against `MockTransport` with no firmware present,
+and it is what turns that dead config knob into a real one. W cannot be
+verified without T; H cannot deliver either without both.
+
+**T and T2 are done.** Of the five blockers above, the middle three are closed:
+`config.transports` now has a consumer (`protocol/selection.py`), a real
+`SerialTransport` exists, and `app.py` builds the `Link`, so `driver = "esp32"`
+constructs for the first time. An unknown transport `kind` now raises rather
+than falling back to a mock — "connected but silent" is the most expensive
+failure this device can present.
+
+Multi-monitor came in with T2 and cost almost nothing, because **D36 arbitrates
+writers, not surfaces**: `DisplayFanout` sits *underneath* `ScreenOwner` as the
+single driver it writes to, so mirroring is invisible to arbitration. It is
+cheap only because E2 chose structure over pixels — a `display.state` message is
+a few dozen bytes, so each surface renders it to suit its own panel; a
+framebuffer vocabulary would mean rasterising per screen. A surface that fails
+is logged, counted and skipped; only a total blackout raises. With no mirrors
+configured the primary driver is returned **unwrapped**, so the single-screen
+path is byte-for-byte unchanged.
+
+What remains for the screen goal is W (firmware) and H (Nomad is still not
+deployed to the Pi).
+
+Before W is written, identify the panel and touch controller ICs at runtime
+(SPI read-ID; I2C scan) — see the measured table in `ARCHITECTURE.md`. And the
+firmware **must** enable USB CDC on boot, or the control link is silent by
+default.
 
 Ordering: A → B → C → D → G → G2 → **E** → M → F1 → F2 → **V → R → N → U → S → O**
 → P → I → F3 → H.
@@ -173,6 +222,45 @@ dependency, not preference:
   a skill is the cheapest shape for the thing it promotes *into*.
 - **O last of the six** — it is the hardest chunk and it wants every other
   surface already present to route into.
+
+### The audio question (2026-08-08) — researched, deferred to chunk X
+
+The operator asked whether onboard STT is the plan, having had bad accuracy from
+small local models, and whether mic chunks could instead be handed to the Claude
+CLI. Deferred until the screen works; recorded here so none of it is
+re-researched.
+
+**The Claude CLI cannot take audio.** Checked against the API reference rather
+than answered from memory. Input content blocks are `text`, `image`, and
+`document` (PDF/text) — there is no audio block type, and no transcription
+endpoint anywhere in the API. The Python SDK's own MCP conversion helpers name
+**audio** as an example of an unsupported content type that raises
+`UnsupportedMCPValueError`. The phone app's mic button is **client-side**
+speech-to-text: the device transcribes and sends *text* upstream. So Nomad has
+to produce text before the backend is involved, exactly as D37 assumed. That is
+a property of the API, not of `claude-agent-sdk`, so a local-model backend
+changes nothing here.
+
+Three places the transcription can happen, and only the third is new:
+
+1. **On the Pi — `whisper.cpp`.** ARM NEON build, `tiny`/`base` quantised, under
+   ~200 MB resident. Python Whisper on PyTorch is the thing to avoid: it wants
+   1–2 GB and would evict the Node/CLI session. This is the offline floor, and
+   its accuracy is the operator's stated complaint.
+2. **A cloud STT vendor.** The accuracy answer, but it is microphone audio
+   leaving the device to a third party. That is an explicit operator decision,
+   never a default, and it wants a `never_auto`-adjacent treatment.
+3. **On the VPS.** The operator's point, and it changes the calculus: the VPS is
+   not only a publishing target, it is compute Nomad already owns and already
+   trusts. A larger Whisper there is the accuracy of (2) without a new vendor,
+   and the RAM cost of (1) without spending the Pi's. It needs a reachability
+   story — offline means falling back to (1) or to text — and the audio still
+   leaves the device, just to somewhere the operator controls.
+
+Push-to-talk makes all three easier than they look: it yields one complete
+utterance, so a batch upload is enough and no streaming protocol is owed. And
+D37 already made `Transcriber` a protocol with a mock default, so whichever way
+this lands it is a leaf swap — it does not block T, T2, W, or H.
 
 ## The adversarial review (2026-08-08)
 

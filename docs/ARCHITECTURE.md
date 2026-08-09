@@ -379,14 +379,75 @@ the plan (D9) and not a gap.
 
 | Part | Status |
 |---|---|
-| Hosyond ESP32-S3 touchscreen module, UPC 712490971738 | Connected by USB-C, powered, **running its factory demo** — i.e. stock firmware, not D30's wire format. Not yet addressable by Nomad |
-| Raspberry Pi 4 | Powered down while fans are fitted; it ran hot |
+| Hosyond ESP32-S3 touchscreen module, UPC 712490971738 | Wired to the Pi and enumerating. **Running its factory demo** — stock LVGL `lv_demo_widgets`, not D30's wire format. Not yet addressable by Nomad |
+| Raspberry Pi 4 | Up at `nomad.local`. **Nomad is not deployed to it** — the home directory is empty and no service is defined |
 | RP2040-Zero, PiSugar S Plus | Not yet acquired/wired |
 
-Before any firmware is written, confirm against the module itself rather than
-this table: panel resolution, touch controller IC, USB-serial bridge, and
-whether its mic and amplifier can be exposed as USB Audio Class alongside CDC
-(D37). Guessing any of them wastes a flash cycle.
+## The display module, as measured (2026-08-08)
+
+Read off the hardware rather than a datasheet, so this supersedes any guess
+above. Vendor model: *Hosyond ESP32-S3 Touchscreen Module, 2.8" 240x320 IPS,
+capacitive*.
+
+| Fact | Value | How it was established |
+|---|---|---|
+| Chip | ESP32-S3 (QFN56) rev v0.2, 40 MHz crystal | `esptool flash_id` |
+| Flash / PSRAM | **16 MB** flash, **8 MB** embedded PSRAM (AP_3v3) | `esptool flash_id` |
+| MAC | `28:84:85:44:3f:d4` | `esptool`, and the USB serial number |
+| Panel | 2.8" IPS, **240x320** native (portrait), SPI | Vendor table; demo runs it landscape |
+| Touch | Capacitive, I2C — **controller IC not yet identified** | Vendor table (IO15/16); needs an I2C scan |
+| USB link | **Native ESP32-S3 USB Serial/JTAG — there is no bridge chip** | `303a:1001`, not a CH340/CP210x |
+| Factory firmware | LVGL `lv_demo_widgets`, `arduino-lib-builder`, IDF `v5.4.1`, built Mar 28 2025 | App descriptor at `0x10000` |
+| Partitions | `nvs`, `otadata`, `app0`, `spiffs`, `coredump` (Arduino layout) | Flash read at `0x8000` |
+
+**The USB link is the native peripheral, and that has two consequences.**
+It enumerates as `/dev/ttyACM0` whether or not any firmware runs, so presence
+on the bus proves nothing about firmware — read the app descriptor instead.
+And Arduino `Serial` goes to UART0 (IO43/44) unless *USB CDC On Boot* is set,
+so a silent port is the default state of a **working** board, not a symptom.
+Nomad's firmware must enable USB CDC on boot or the control link is dead.
+
+### Pin map (vendor documentation)
+
+| Device | Signal | GPIO |
+|---|---|---|
+| **LCD** | CS (active low) | IO10 |
+| | DC (high = data, low = command) | IO46 |
+| | SCLK | IO12 |
+| | MOSI | IO11 |
+| | MISO | IO13 |
+| | RST | *shared with the ESP32-S3 reset* |
+| | Backlight (high = on) | IO45 |
+| **Touch** | I2C SDA | IO16 |
+| | I2C SCL | IO15 |
+| | RST (active low) | IO18 |
+| | INT (low on touch) | IO17 |
+| **RGB LED** | Single-wire RGB | IO42 |
+| **microSD** | SDIO CLK / CMD | IO38 / IO40 |
+| | SDIO DATA0–3 | IO39 / IO41 / IO48 / IO47 |
+| **Audio** | Enable (active low) | IO1 |
+| | I2S MCLK / BCLK / DOUT / LRCK / DIN | IO4 / IO5 / IO6 / IO7 / IO8 |
+| **Keys** | BOOT | IO0 |
+| **UART0** | RX / TX | IO43 / IO44 |
+| **Battery** | Voltage sense (ADC) | IO9 |
+| **Expansion** | Free GPIO | IO2, IO3, IO14, IO21 |
+
+MISO is wired, so the panel controller can be identified at runtime by SPI
+read-ID rather than by guessing between ILI9341 and ST7789 — do that before
+committing a driver. The touch IC likewise falls out of an I2C scan (GT911 at
+`0x5D`/`0x14`, CST816 at `0x15`, FT6236 at `0x38`).
+
+> **This module has no joystick and no four buttons.** The table above still
+> describes them because D13's *logical input actions* are the contract and
+> the transport for them was never promised — but the hardware in hand offers
+> capacitive touch, one BOOT key, and four expansion GPIOs, and nothing else.
+> Either input arrives as touch gestures mapped to the same logical actions,
+> or buttons get wired to IO2/3/14/21. That is an open decision, not a gap to
+> paper over.
+
+Still unconfirmed, and still worth confirming before a flash cycle: the touch
+and panel controller ICs above, and whether the on-board mic and amplifier can
+be exposed as USB Audio Class alongside CDC (D37).
 
 > **WARNING — the RP2040 is a keystroke-injection device by construction.**
 > Typing into another computer is not a side effect to be careful about; it

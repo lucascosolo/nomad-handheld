@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
+from nomad.core.config import TransportConfig
 from nomad.core.errors import ProtocolError, TransportError
 from nomad.protocol import (
     DEFAULT_MAX_FRAME_BYTES,
@@ -23,9 +25,12 @@ from nomad.protocol import (
     Message,
     MessageType,
     MockTransport,
+    SerialTransport,
     SystemError,
     SystemHello,
+    Transport,
     catalogue_for,
+    create_transport,
     payload_model_for,
 )
 
@@ -238,6 +243,189 @@ async def test_closed_transport_reads_empty_and_refuses_writes() -> None:
     assert await transport.receive() == b""
     with pytest.raises(TransportError):
         await transport.send(b"x")
+
+
+# --- serial transport -----------------------------------------------------
+#
+# All of this runs with no serial port and no `pyserial-asyncio` installed
+# (D9). The happy path injects a fake module so the transport's own code runs
+# for real — a test that only asserted the import error would leave send,
+# receive and EOF handling entirely uncovered.
+
+
+class _FakeSerialReader:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    async def read(self, _size: int) -> bytes:
+        if not self._chunks:
+            return b""  # EOF, as a real StreamReader reports it
+        return self._chunks.pop(0)
+
+
+class _FakeSerialWriter:
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+def _install_fake_serial(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[bytes]
+) -> tuple[_FakeSerialWriter, dict[str, object]]:
+    """Put a stand-in `serial_asyncio` on `sys.modules` and report the args."""
+    import sys
+    import types
+
+    writer = _FakeSerialWriter()
+    seen: dict[str, object] = {}
+
+    async def open_serial_connection(**kwargs: object) -> tuple[object, object]:
+        seen.update(kwargs)
+        return _FakeSerialReader(chunks), writer
+
+    module = types.ModuleType("serial_asyncio")
+    module.open_serial_connection = open_serial_connection  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "serial_asyncio", module)
+    return writer, seen
+
+
+def test_serial_transport_refuses_an_empty_port() -> None:
+    with pytest.raises(TransportError):
+        SerialTransport("")
+
+
+def test_serial_transport_names_itself_after_its_port() -> None:
+    assert SerialTransport("/dev/ttyACM0").name == "serial:/dev/ttyACM0"
+    assert SerialTransport("/dev/ttyACM0", name="esp32").name == "esp32"
+
+
+async def test_serial_transport_is_closed_until_started() -> None:
+    transport = SerialTransport("/dev/ttyACM0")
+    assert transport.closed
+    # Closed reads are end-of-stream, not an error — a reader loop must stop.
+    assert await transport.receive() == b""
+    with pytest.raises(TransportError):
+        await transport.send(b"x")
+
+
+async def test_serial_transport_without_the_extra_raises_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing optional dependency is a transport failure, not an ImportError.
+
+    Callers above `Transport` cannot act on the difference, and D2 says they
+    should not have to know it.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "serial_asyncio", None)
+    transport = SerialTransport("/dev/ttyACM0")
+    with pytest.raises(TransportError):
+        await transport.start()
+
+
+async def test_serial_transport_round_trips_over_a_fake_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer, seen = _install_fake_serial(monkeypatch, [b"he", b"llo"])
+    transport = SerialTransport("/dev/ttyACM0", baudrate=921600)
+
+    await transport.start()
+    assert seen == {"url": "/dev/ttyACM0", "baudrate": 921600}
+    assert not transport.closed
+
+    await transport.send(b"ping")
+    assert writer.written == [b"ping"]
+
+    # Chunk boundaries arrive as the port gives them — the framer's problem.
+    assert await transport.receive() == b"he"
+    assert await transport.receive() == b"llo"
+
+    await transport.stop()
+    assert transport.closed
+    assert writer.closed
+
+
+async def test_serial_transport_latches_closed_on_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unplugged peer must end the stream, not spin the reader loop."""
+    _install_fake_serial(monkeypatch, [b"data"])
+    transport = SerialTransport("/dev/ttyACM0")
+    await transport.start()
+
+    assert await transport.receive() == b"data"
+    assert await transport.receive() == b""
+    assert transport.closed
+    # And it keeps saying b"" rather than reopening.
+    assert await transport.receive() == b""
+
+
+async def test_serial_transport_send_is_a_noop_for_empty_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer, _ = _install_fake_serial(monkeypatch, [])
+    transport = SerialTransport("/dev/ttyACM0")
+    await transport.start()
+    await transport.send(b"")
+    assert writer.written == []
+
+
+async def test_a_link_cannot_tell_serial_from_a_mock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2's actual claim: nothing above `Transport` special-cases the real one."""
+    _install_fake_serial(monkeypatch, [])
+    transport = SerialTransport("/dev/ttyACM0")
+    assert isinstance(transport, Transport)
+
+
+# --- transport selection --------------------------------------------------
+
+
+def test_create_transport_defaults_to_a_mock() -> None:
+    assert isinstance(create_transport(TransportConfig()), MockTransport)
+
+
+def test_create_transport_builds_a_serial_transport_without_importing_the_extra() -> None:
+    """Selecting `serial` must not require `pyserial-asyncio` to be installed —
+    the import is deferred to `start()`, so construction alone stays cheap."""
+    config = TransportConfig(kind="serial", port="/dev/ttyACM0", baudrate=921600)
+    transport = create_transport(config, name="esp32")
+    assert isinstance(transport, SerialTransport)
+    assert transport.port == "/dev/ttyACM0"
+    assert transport.baudrate == 921600
+    assert transport.name == "esp32"
+
+
+def test_create_transport_rejects_an_unknown_kind() -> None:
+    """A typo must not silently become a mock — 'connected but silent' is the
+    most expensive failure to diagnose on this device."""
+    config = TransportConfig.model_construct(kind="srial", port="/dev/ttyACM0", baudrate=115200)
+    with pytest.raises(TransportError):
+        create_transport(config)
+
+
+def test_transport_config_rejects_an_unknown_kind() -> None:
+    with pytest.raises(ValidationError):
+        TransportConfig(kind="uart")
+
+
+def test_transport_config_requires_a_port_for_serial() -> None:
+    with pytest.raises(ValidationError):
+        TransportConfig(kind="serial", port="")
 
 
 # --- link ----------------------------------------------------------------

@@ -179,9 +179,16 @@ command_timeout_seconds = 120
 # backend actually exists to route between.
 
 [display]
-driver = "mock"          # mock | esp32
+driver = "mock"          # mock | headless | esp32
 width = 320
 height = 240
+# Extra surfaces that mirror the primary one. `headless` here is what a monitor
+# plugged into the Pi sees, because the browser view renders the headless
+# surface's HTML - so HDMI needs no new rendering code. Every surface gets every
+# write concurrently; one failing surface is logged and skipped rather than
+# blacking out the others. A kind may not appear twice, and with `mirror` empty
+# the primary driver is used directly with no fanout at all. (D36)
+mirror = []              # e.g. ["headless"] alongside driver = "esp32"
 
 [audio]
 recorder_driver = "mock"       # mock | alsa
@@ -197,7 +204,13 @@ max_record_seconds = 30.0
 # loads on request. The budget is what stops a growing library taxing every
 # turn - truncation is announced, never silent.
 enabled = true
+# Where authored skills go: writable, gitignored, no release needed (D25).
 root = "var/skills"
+# The committed seed library, loaded first so a fresh checkout is not a device
+# with no skills. Commented out means "the skills/ directory beside NOMAD.md".
+# An authored skill of the same name shadows a seed - operators edit around the
+# shipped set rather than editing the source tree. Set to "" to ship no seeds.
+# seed_root = "skills"
 index_budget_chars = 800
 
 [resources]
@@ -229,12 +242,16 @@ driver = "mock"          # mock | picamera
 driver = "mock"
 
 [transports.esp32]
-kind = "mock"            # mock | serial
+# These are live now - `protocol.create_transport` reads them. An unrecognised
+# kind is rejected at config load rather than falling back to a mock, because a
+# device that boots "connected" and stays silent is the worst thing to debug.
+# `serial` requires a non-empty port, also enforced at load.
+kind = "mock"            # mock | loopback | serial
 port = "/dev/ttyACM0"
 baudrate = 921600
 
 [transports.rp2040]
-kind = "mock"            # mock | serial
+kind = "mock"            # mock | loopback | serial
 port = "/dev/ttyACM1"
 baudrate = 115200
 

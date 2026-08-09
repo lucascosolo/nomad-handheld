@@ -14,12 +14,12 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from nomad.app import NomadApp
 from nomad.core.config import NomadConfig
 from nomad.core.errors import ConfigError, LifecycleError
 from nomad.core.lifecycle import ComponentState
-from nomad.hardware.errors import HardwareError
 from nomad.hardware.headless_display import HeadlessDisplay
 from nomad.input.choice import ExternalChoicePrompter, NullChoicePrompter
 from nomad.storage.migrations import MIGRATIONS, current_version
@@ -216,15 +216,57 @@ async def test_the_view_is_on_for_either_headless_driver_name(tmp_path: Path) ->
     assert app.view is not None
 
 
-async def test_a_display_with_its_own_glass_is_not_wired_yet(tmp_path: Path) -> None:
-    """`esp32` needs a `Link` the composition root does not build yet.
+async def test_a_display_with_its_own_glass_gets_a_link(tmp_path: Path) -> None:
+    """`esp32` now builds, because the composition root builds the `Link`.
 
-    Recorded as a failure rather than a silent fallback to the headless
-    screen: a device configured for its own glass and quietly given a browser
-    page instead is worse than one that says it cannot boot.
+    This test previously asserted the opposite — that the app refused to
+    construct — and it was right to, because a device configured for its own
+    glass and quietly handed a browser page instead is worse than one that says
+    it cannot boot. The fallback is still refused; what changed is that the
+    link exists, so there is nothing to fall back *from*.
     """
-    with pytest.raises(HardwareError):
-        NomadApp(_config(tmp_path, display={"driver": "esp32"}))
+    app = NomadApp(_config(tmp_path, display={"driver": "esp32"}))
+    assert app.esp32_link is not None
+    # Default transport kind is `mock`, so this needs no serial port (D9).
+    assert app.display is not None
+    # Its own glass means no browser copy of the screen.
+    assert app.view is None
+
+
+async def test_no_link_is_built_when_no_surface_needs_one(tmp_path: Path) -> None:
+    """A `Link` owns a reader task. Building one nothing talks to would burn a
+    wakeup forever on a laptop build."""
+    app = NomadApp(_config(tmp_path))
+    assert app.esp32_link is None
+
+
+async def test_the_esp32_surface_can_be_mirrored_to_a_browser(tmp_path: Path) -> None:
+    """The multi-monitor path: the panel is the face, and a monitor plugged
+    into the Pi sees the same state over HTTP (D36 still arbitrates writers)."""
+    app = NomadApp(
+        _config(tmp_path, display={"driver": "esp32", "mirror": ["headless"]}),
+    )
+    assert app.esp32_link is not None
+    # A mirror that includes a headless surface is what turns the view back on,
+    # even though the *primary* surface has glass of its own.
+    assert app.view is not None
+    assert app.display.describe() == "esp32, headless"
+
+
+async def test_mirroring_writes_to_every_surface(tmp_path: Path) -> None:
+    app = NomadApp(_config(tmp_path, display={"driver": "esp32", "mirror": ["headless"]}))
+    await app.display.show_text("status", title="Nomad")
+    # The headless surface holds the HTML the browser view serves, so proving
+    # it received the write proves the fanout reached past the primary.
+    headless = app.display.surface("headless")
+    assert "status" in str(headless.screen.html)
+
+
+async def test_a_surface_cannot_be_listed_twice(tmp_path: Path) -> None:
+    """Two surfaces of one kind double every write, and for `esp32` would mean
+    two drivers on one link."""
+    with pytest.raises(ValidationError):
+        _config(tmp_path, display={"driver": "headless", "mirror": ["headless"]})
 
 
 async def test_the_view_can_be_switched_off(tmp_path: Path) -> None:

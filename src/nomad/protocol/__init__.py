@@ -65,7 +65,13 @@ from nomad.protocol.messages import (
     known_types,
     payload_model_for,
 )
-from nomad.protocol.transport import LoopbackTransport, MockTransport, Transport
+from nomad.protocol.selection import create_transport
+from nomad.protocol.transport import (
+    LoopbackTransport,
+    MockTransport,
+    SerialTransport,
+    Transport,
+)
 
 __all__ = [
     "CATALOGUE",
@@ -105,12 +111,14 @@ __all__ = [
     "PayloadModel",
     "RebootEvent",
     "RebootHandler",
+    "SerialTransport",
     "SystemError",
     "SystemHello",
     "TouchPhase",
     "Transport",
     "catalogue_for",
     "checksum",
+    "create_transport",
     "known_types",
     "payload_model_for",
 ]

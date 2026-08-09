@@ -5,13 +5,16 @@ means. It hands over whatever bytes arrived, in whatever sizes they arrived in
 — a transport that inspected a payload to make a decision would be the exact
 violation D2 exists to prevent.
 
-Two implementations ship, both mock (D9): the suite must pass on a laptop with
-no serial port and no hardware attached.
+Three implementations ship. Two are mocks and **mock is still the default**
+(D9): the suite must pass on a laptop with no serial port and no hardware
+attached, and `SerialTransport` is written so that merely importing this module
+costs nothing — `pyserial-asyncio` is an optional extra, imported inside
+`start()` and nowhere else.
 
-**There is deliberately no serial transport here.** `pyserial-asyncio` is an
-optional extra, no firmware exists yet to talk to, and a serial transport
-written against imagined hardware is a liability rather than a head start. It
-arrives with the drivers that need it, implementing this same Protocol.
+`SerialTransport` arrived with real hardware to talk to (a Hosyond ESP32-S3
+module on `/dev/ttyACM0`), which is the bar this module's earlier docstring set
+for writing it. It is not special-cased anywhere above: a `Link` cannot tell it
+from `MockTransport`, which is the whole point of D2.
 """
 
 from __future__ import annotations
@@ -147,3 +150,117 @@ class MockTransport(_QueueTransport):
     @property
     def sent_bytes(self) -> bytes:
         return b"".join(self.sent)
+
+
+class SerialTransport:
+    """Bytes over a real serial port, via `pyserial-asyncio` (optional extra).
+
+    **The import lives inside `start()` on purpose.** `nomad.protocol` is
+    imported by everything, and the suite runs on a laptop with no serial port
+    and no `pyserial-asyncio` installed (D9). A module-level import would make
+    an optional extra mandatory for anyone who so much as touches a `Link`.
+
+    A missing dependency and an unopenable port both raise `TransportError`,
+    because from a caller's position they are the same event: this transport
+    cannot carry bytes. Nothing above here should have to know which it was in
+    order to fall back.
+    """
+
+    def __init__(self, port: str, *, baudrate: int = 921600, name: str | None = None) -> None:
+        if not port:
+            raise TransportError("a serial transport needs a port; none was configured")
+        self.name = name or f"serial:{port}"
+        self._port = port
+        self._baudrate = baudrate
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        self._closed = True
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def port(self) -> str:
+        return self._port
+
+    @property
+    def baudrate(self) -> int:
+        return self._baudrate
+
+    async def start(self) -> None:
+        if not self._closed:
+            return
+        try:
+            import serial_asyncio
+        except ImportError as exc:  # pragma: no cover - depends on the extra
+            raise TransportError(
+                "the serial transport needs the 'serial' extra: pip install -e '.[serial]'",
+                {"port": self._port},
+            ) from exc
+
+        try:
+            self._reader, self._writer = await serial_asyncio.open_serial_connection(
+                url=self._port, baudrate=self._baudrate
+            )
+        except Exception as exc:  # pragma: no cover - depends on real hardware
+            raise TransportError(
+                f"could not open serial port '{self._port}': {exc}",
+                {"port": self._port, "baudrate": self._baudrate},
+            ) from exc
+
+        self._closed = False
+        logger.info(
+            "serial transport open", extra={"port": self._port, "baudrate": self._baudrate}
+        )
+
+    async def stop(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        writer, self._writer, self._reader = self._writer, None, None
+        if writer is None:
+            return
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception as exc:  # pragma: no cover - close paths vary by platform
+            # A port that failed to close cleanly is still closed as far as
+            # this process is concerned; raising here would strand callers in
+            # shutdown for something they cannot act on.
+            logger.warning("serial transport close failed", extra={"error": str(exc)})
+
+    async def send(self, data: bytes) -> None:
+        if self._closed or self._writer is None:
+            raise TransportError(f"transport '{self.name}' is closed")
+        if not data:
+            return
+        try:
+            self._writer.write(data)
+            await self._writer.drain()
+        except Exception as exc:  # pragma: no cover - depends on real hardware
+            self._closed = True
+            raise TransportError(f"serial write failed on '{self._port}': {exc}") from exc
+
+    async def receive(self) -> bytes:
+        """Up to one buffer of whatever arrived. `b""` means end-of-stream.
+
+        A serial port hands back arbitrary chunk boundaries — a frame may
+        arrive in seven pieces, or seven frames in one. That is the framer's
+        problem by construction (D2), and `Framing` is already tested against
+        the byte-at-a-time worst case.
+        """
+        if self._closed or self._reader is None:
+            return b""
+        try:
+            data = await self._reader.read(4096)
+        except Exception as exc:  # pragma: no cover - depends on real hardware
+            self._closed = True
+            logger.warning("serial read failed", extra={"port": self._port, "error": str(exc)})
+            return b""
+        if not data:
+            # EOF: the peer unplugged or reset. Latch closed so a reader loop
+            # sees a steady stream of b"" and stops, rather than spinning.
+            self._closed = True
+            return b""
+        return data
