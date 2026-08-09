@@ -414,7 +414,29 @@ class NomadApp:
         if "esp32" not in self._config.display.surfaces:
             return None
         transport = create_transport(self._config.transports.esp32, name="esp32")
-        return Link(transport, kind=LinkKind.DISPLAY, name="esp32")
+        link = Link(transport, kind=LinkKind.DISPLAY, name="esp32")
+        link.on_reboot(self._redraw_after_reboot)
+        return link
+
+    async def _redraw_after_reboot(self, event: object) -> None:
+        """Put something back on the glass after the panel restarts.
+
+        D30 detects a reboot by watching `seq` go backwards, and until now
+        nothing acted on that for the display. It has to, and the reason is not
+        hypothetical: **opening the serial port resets the board.** Asserting
+        DTR/RTS is how esptool reboots an ESP32, and pyserial does it on open —
+        so the very first thing Nomad does to the panel is restart it. The boot
+        card was drawn once, immediately, and the panel came back up *after* it
+        had been sent. The Pi logged a successful write, the fanout reported no
+        failure, and the screen sat on "waiting for the Pi" forever.
+
+        That is the worst shape a bug can take on this device: every layer
+        reports success and the glass is wrong. Redrawing on reboot fixes the
+        boot race and, for free, makes the screen self-healing when the panel
+        is unplugged and plugged back in.
+        """
+        logger.info("Panel rebooted; redrawing", extra={"event": str(event)})
+        await self._show_status_card()
 
     def _build_view(self) -> ScreenServer | None:
         """The browser view, served whenever some surface is headless.
