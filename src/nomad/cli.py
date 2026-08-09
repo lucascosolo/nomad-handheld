@@ -132,7 +132,14 @@ async def cmd_status(args: argparse.Namespace) -> int:
     config = _load(args)
     configure_logging("WARNING" if not args.debug else config.core.log_level, "console")
 
-    app = NomadApp(_headless(config))
+    # The *real* config, not the view-less copy `ask` and `chat` use. Nothing
+    # here starts the view, and `ScreenServer` binds nothing until `start()` —
+    # so constructing it is free, and reporting from an edited config would
+    # describe a device that does not exist. It said `NullChoicePrompter` on a
+    # device that actually runs `ExternalChoicePrompter`, which is the
+    # difference between "denies everything" and "asks the browser": exactly
+    # the fact an operator runs this command to learn.
+    app = NomadApp(config)
     started = False
     try:
         await app.db.start()

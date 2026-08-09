@@ -209,6 +209,37 @@ def test_the_parser_offers_the_four_commands() -> None:
         assert parser.parse_args([command, *(["hi"] if command == "ask" else [])])
 
 
+async def test_status_reports_the_prompter_the_device_would_actually_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`status` must not report from an edited config.
+
+    It used to construct the app with the browser view forced off, the way
+    `ask` and `chat` do to avoid a port clash — and so it printed
+    `NullChoicePrompter`, which denies everything, for a device that actually
+    runs `ExternalChoicePrompter` and asks. That is the difference between a
+    broken device and a working one, and it is precisely the fact an operator
+    runs this command to learn.
+    """
+    config_file = tmp_path / "nomad.toml"
+    config_file.write_text(
+        "[storage]\n"
+        f'path = "{tmp_path / "nomad.db"}"\n'
+        "[workspace]\n"
+        f'root = "{tmp_path / "workspace"}"\n'
+        "[display]\n"
+        'driver = "headless"\n'
+        "[view]\n"
+        "enabled = true\n"
+        "port = 0\n"
+    )
+    monkeypatch.setenv("NOMAD_CONFIG", str(config_file))
+
+    await cmd_status(build_parser().parse_args(["status"]))
+
+    assert "ExternalChoicePrompter" in capsys.readouterr().out
+
+
 async def test_status_exits_non_zero_when_the_backend_cannot_answer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
