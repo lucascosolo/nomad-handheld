@@ -26,7 +26,7 @@ from nomad.core.errors import ConfigError
 from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import DEFAULT_HISTORY_LIMIT, HeadlessDisplay
-from nomad.view.renderer import TurnRenderer
+from nomad.view.renderer import DEFAULT_MAX_DETAIL_CHARS, TurnRenderer, _tool_detail
 from nomad.view.screen import ScreenOwner
 from nomad.view.server import ScreenServer
 
@@ -478,3 +478,79 @@ async def test_a_frame_queued_behind_a_draw_loses_to_a_claim_taken_meanwhile(
         await queued
         assert screen.screen.text == "first"
         assert owner.suppressed == 1
+
+
+# -- what a call is doing, on the glass -------------------------------------
+#
+# The device shipped drawing the title "Running Bash" over a bare ellipsis and
+# holding it for minutes. It was not a crash and no log line said anything was
+# wrong; the operator simply looked at the screen and could not tell whether
+# Nomad was working or wedged. NOMAD.md promises the opposite, so these pin the
+# body being present and true.
+
+
+def test_a_bash_call_shows_the_command() -> None:
+    assert _tool_detail("Bash", {"command": "pytest -q"}) == "pytest -q"
+
+
+def test_a_file_tool_shows_the_path() -> None:
+    assert _tool_detail("Write", {"file_path": "/home/nomad/x.py", "content": "..."}) == (
+        "/home/nomad/x.py"
+    )
+
+
+def test_an_unknown_tool_falls_back_to_its_most_useful_argument() -> None:
+    """A tool added to the backend tomorrow should not render as an ellipsis
+    just because this table has not heard of it."""
+    assert _tool_detail("SomeNewTool", {"unrelated": 1, "path": "/tmp/thing"}) == "/tmp/thing"
+
+
+def test_a_multiline_command_is_collapsed_to_one_line() -> None:
+    """A heredoc would otherwise spend the whole screen on its own newlines and
+    push the first, identifying token off the top."""
+    assert _tool_detail("Bash", {"command": "git commit -F - <<'X'\nsubject\n\nbody\nX"}) == (
+        "git commit -F - <<'X' subject body X"
+    )
+
+
+def test_a_long_argument_is_truncated_rather_than_overflowing() -> None:
+    detail = _tool_detail("Bash", {"command": "x" * 500})
+    assert len(detail) <= DEFAULT_MAX_DETAIL_CHARS
+    assert detail.endswith("…")
+
+
+def test_a_payload_that_is_not_a_dict_costs_nothing() -> None:
+    """`tool_input` comes off the bus as JSON. The renderer is the last place
+    that may raise — a blank screen is worse than a missing detail line."""
+    assert _tool_detail("Bash", None) == ""
+    assert _tool_detail("Bash", ["command"]) == ""
+    assert _tool_detail("Bash", {"command": 17}) == ""
+    assert _tool_detail("Bash", {"command": "   "}) == ""
+
+
+async def test_the_mid_turn_screen_carries_the_command(
+    renderer: TurnRenderer, screen: HeadlessDisplay
+) -> None:
+    """The reported symptom, pinned: the body is the command, not an ellipsis."""
+    await renderer.handle(_started())
+    await renderer.handle(
+        _agent(
+            AgentEventKind.TOOL_CALL,
+            tool_name="Bash",
+            tool_input={"command": "git worktree add ~/nomad-scratch/try"},
+        )
+    )
+    assert "git worktree add ~/nomad-scratch/try" in screen.screen.text
+
+
+async def test_a_new_turn_clears_the_previous_call_detail(
+    renderer: TurnRenderer, screen: HeadlessDisplay
+) -> None:
+    """Otherwise the next turn opens showing the last thing the *previous* one
+    ran, which is the same class of bug as a stale screen."""
+    await renderer.handle(_started())
+    await renderer.handle(
+        _agent(AgentEventKind.TOOL_CALL, tool_name="Bash", tool_input={"command": "pytest -q"})
+    )
+    await renderer.handle(_started())
+    assert "pytest" not in screen.screen.text

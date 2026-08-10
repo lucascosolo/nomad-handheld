@@ -53,6 +53,72 @@ DEFAULT_MAX_CHARS = 600
 _WORKING = "…"
 _THINKING_TITLE = "Thinking"
 
+#: How much of a tool's own argument reaches the glass. Long enough for a real
+#: command or a path to be recognisable, short enough that it cannot push the
+#: title off a screen that does not scroll.
+DEFAULT_MAX_DETAIL_CHARS = 120
+
+#: Which argument actually says what a call is *doing*, per tool. A tool not
+#: listed here falls back to the single most path-like argument it has, which
+#: is right far more often than picking the first key of a dict.
+#:
+#: This exists because the alternative shipped for a while and was wrong in a
+#: way only the operator could see: a long `Bash` call rendered as the title
+#: "Running Bash" over a bare ellipsis and stayed that way for minutes.
+#: NOMAD.md's promise is that one second of looking tells you whether the
+#: device is working, waiting or idle, and an ellipsis satisfies none of it.
+_TOOL_DETAIL_KEYS: dict[str, tuple[str, ...]] = {
+    "Bash": ("command",),
+    "Read": ("file_path",),
+    "Write": ("file_path",),
+    "Edit": ("file_path",),
+    "MultiEdit": ("file_path",),
+    "NotebookEdit": ("notebook_path",),
+    "Glob": ("pattern",),
+    "Grep": ("pattern",),
+    "WebFetch": ("url",),
+    "WebSearch": ("query",),
+    "Task": ("description",),
+    "Skill": ("command", "name"),
+}
+
+#: Tried in order for a tool with no entry above.
+_GENERIC_DETAIL_KEYS = ("file_path", "path", "command", "pattern", "query", "url", "name")
+
+
+def _tool_detail(
+    tool: str | None,
+    tool_input: object,
+    *,
+    max_chars: int = DEFAULT_MAX_DETAIL_CHARS,
+) -> str:
+    """One line saying what this call is doing, or `""` if nothing is worth it.
+
+    Defensive about its input on purpose: `tool_input` arrives as a JSON
+    payload off the bus, so it may be absent, not a dict, or hold a value that
+    is not a string. A renderer is the last place that should raise — the
+    screen going blank because a tool passed a list is a worse failure than
+    showing nothing for this one call.
+
+    Whitespace is collapsed because a multi-line heredoc in a `Bash` command
+    would otherwise eat the whole screen with its own newlines and leave the
+    interesting first token off the top.
+    """
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+    keys = _TOOL_DETAIL_KEYS.get(tool or "", _GENERIC_DETAIL_KEYS)
+    for key in keys:
+        value = tool_input.get(key)
+        if not isinstance(value, str):
+            continue
+        detail = " ".join(value.split())
+        if not detail:
+            continue
+        if len(detail) > max_chars:
+            return detail[: max_chars - 1].rstrip() + "…"
+        return detail
+    return ""
+
 
 class TurnRenderer:
     """Draws the turn in flight, and then the answer, onto a `DisplayDriver`."""
@@ -74,6 +140,7 @@ class TurnRenderer:
         self._turn_id: str | None = None
         self._chunks: list[str] = []
         self._tool: str | None = None
+        self._tool_detail: str = ""
 
     @property
     def state(self) -> ComponentState:
@@ -111,6 +178,7 @@ class TurnRenderer:
         self._turn_id = str(payload.get("turn_id") or "") or None
         self._chunks = []
         self._tool = None
+        self._tool_detail = ""
         await self._display.show_text(_WORKING, title=_THINKING_TITLE)
 
     async def _on_agent_event(self, payload: dict[str, Any]) -> None:
@@ -124,6 +192,7 @@ class TurnRenderer:
             await self._draw_partial()
         elif kind == AgentEventKind.TOOL_CALL:
             self._tool = payload.get("tool_name") or None
+            self._tool_detail = _tool_detail(self._tool, payload.get("tool_input"))
             await self._draw_partial()
         elif kind == AgentEventKind.THINKING and not self._chunks:
             await self._display.show_text(_WORKING, title=_THINKING_TITLE)
@@ -139,6 +208,7 @@ class TurnRenderer:
         """The authoritative end-of-turn draw. Never derived from the chunks."""
         self._turn_id = None
         self._tool = None
+        self._tool_detail = ""
         status = str(payload.get("status", ""))
         text = str(payload.get("text") or "")
         error = payload.get("error")
@@ -162,7 +232,11 @@ class TurnRenderer:
         text = "".join(self._chunks)
         if not text:
             label = f"Running {self._tool}" if self._tool else _THINKING_TITLE
-            await self._display.show_text(_WORKING, title=label)
+            # The tool's own argument, when there is one. Falling back to the
+            # ellipsis is still right for `Thinking` and for a tool that takes
+            # nothing worth showing — the point is that a body exists whenever
+            # there is something true to put in it.
+            await self._display.show_text(self._tool_detail or _WORKING, title=label)
             return
         await self._display.show_text(self._tail(text) + _WORKING)
 
