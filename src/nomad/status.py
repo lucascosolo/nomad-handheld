@@ -225,7 +225,12 @@ async def _cli_logged_in(path: str) -> bool | None:
     logged out, and downgrading the report on it would make a slow device look
     unauthenticated. Only an explicit `loggedIn: false` counts.
     """
-    output = await _run_cli(path, "auth", "status")
+    # `accept_failure`, because `claude auth status` exits **1** when it is not
+    # logged in. That is the case this function exists to detect, so treating a
+    # non-zero exit as "no answer" threw away the only answer that mattered —
+    # and the device went on reporting `ready` after the fix landed. Found by
+    # deploying it and reading the status, not by reading the diff.
+    output = await _run_cli(path, "auth", "status", accept_failure=True)
     if output is None:
         return None
     try:
@@ -240,7 +245,7 @@ async def _cli_version(path: str) -> str | None:
     return await _run_cli(path, "--version")
 
 
-async def _run_cli(path: str, *args: str) -> str | None:
+async def _run_cli(path: str, *args: str, accept_failure: bool = False) -> str | None:
     """One short read-only CLI call. `None` for anything that is not an answer.
 
     Bounded by the same timeout as the version probe, because this runs on the
@@ -263,7 +268,7 @@ async def _run_cli(path: str, *args: str) -> str | None:
         proc.kill()
         await proc.wait()
         return None
-    if proc.returncode != 0:
+    if proc.returncode != 0 and not accept_failure:
         return None
     return stdout.decode(errors="replace").strip() or None
 

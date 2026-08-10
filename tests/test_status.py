@@ -335,6 +335,31 @@ async def test_an_expired_credential_is_not_reported_as_authenticated(
     assert "expired" in health.detail
 
 
+async def test_a_logged_out_cli_exits_nonzero_and_is_still_believed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`claude auth status` exits **1** when it is not logged in.
+
+    The first version of this fix treated a non-zero exit as "no answer" and so
+    discarded the only answer that mattered — the device kept reporting `ready`
+    after the fix was deployed. This test goes through `_run_cli` rather than
+    stubbing it, because stubbing it is precisely what hid the bug.
+    """
+
+    async def logged_out(*_args: object, **_kwargs: object):
+        class Proc:
+            returncode = 1
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return (b'{"loggedIn": false, "authMethod": "none"}', b"")
+
+        return Proc()
+
+    monkeypatch.setattr(nomad.status.asyncio, "create_subprocess_exec", logged_out)
+
+    assert await nomad.status._cli_logged_in("/usr/bin/claude") is False
+
+
 async def test_a_cli_that_cannot_answer_is_not_called_logged_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
