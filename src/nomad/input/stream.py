@@ -11,9 +11,9 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
-from nomad.input.events import InputAction, TouchEvent
+from nomad.input.events import ChoiceSelection, InputAction, TouchEvent
 from nomad.input.mapper import InputMapper
-from nomad.protocol.messages import InputButton, InputJoystick, InputTouch
+from nomad.protocol.messages import InputButton, InputChoice, InputJoystick, InputTouch
 
 _DEFAULT_TICK_INTERVAL_S = 0.05
 #: Bounded, and it drops rather than blocking — the same trade D6 makes for
@@ -42,7 +42,9 @@ class InputStream:
     ) -> None:
         self._mapper = mapper
         self._tick_interval_s = tick_interval_s
-        self._queue: asyncio.Queue[InputAction | TouchEvent] = asyncio.Queue(maxsize=max_queued)
+        self._queue: asyncio.Queue[InputAction | TouchEvent | ChoiceSelection] = asyncio.Queue(
+            maxsize=max_queued
+        )
         self._task: asyncio.Task[None] | None = None
         self.dropped = 0
 
@@ -68,7 +70,10 @@ class InputStream:
     async def feed_touch(self, payload: InputTouch) -> None:
         self._emit(self._mapper.on_touch(payload))
 
-    def _emit(self, event: InputAction | TouchEvent) -> None:
+    async def feed_choice(self, payload: InputChoice) -> None:
+        self._emit(self._mapper.on_choice(payload))
+
+    def _emit(self, event: InputAction | TouchEvent | ChoiceSelection) -> None:
         """Queue an event, dropping the oldest if nobody is keeping up (D6).
 
         Dropping the *oldest* rather than the newest is deliberate: when a menu
@@ -84,7 +89,7 @@ class InputStream:
             with contextlib.suppress(asyncio.QueueFull):
                 self._queue.put_nowait(event)
 
-    async def events(self) -> AsyncIterator[InputAction | TouchEvent]:
+    async def events(self) -> AsyncIterator[InputAction | TouchEvent | ChoiceSelection]:
         while True:
             yield await self._queue.get()
 

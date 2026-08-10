@@ -15,7 +15,7 @@ import asyncio
 import pytest
 
 from nomad.core.config import InputConfig
-from nomad.input.events import ActionPhase, InputAction, TouchEvent
+from nomad.input.events import ActionPhase, ChoiceSelection, InputAction, TouchEvent
 from nomad.input.mapper import InputMapper
 from nomad.input.router import InputRouter
 from nomad.input.stream import InputStream
@@ -25,6 +25,7 @@ from nomad.protocol.link import Link, LinkKind
 from nomad.protocol.messages import (
     DisplayLinkStatus,
     InputButton,
+    InputChoice,
     InputJoystick,
     InputTouch,
     KeyPhase,
@@ -57,8 +58,10 @@ class Rig:
         self._seq += 1
         self.transport.deliver(frame(message))
 
-    async def next_event(self, *, timeout: float = 2.0) -> InputAction | TouchEvent:
-        async def first() -> InputAction | TouchEvent:
+    async def next_event(
+        self, *, timeout: float = 2.0
+    ) -> InputAction | TouchEvent | ChoiceSelection:
+        async def first() -> InputAction | TouchEvent | ChoiceSelection:
             async for event in self.stream.events():
                 return event
             raise AssertionError("the stream ended without an event")
@@ -156,3 +159,37 @@ async def test_stopping_the_router_leaves_no_task_behind(rig: Rig) -> None:
     assert rig.router._task is None
     # Idempotent: the registry may stop a component it already stopped.
     await rig.router.stop()
+
+
+async def test_a_tap_on_an_option_arrives_as_a_selection(rig: Rig) -> None:
+    """The panel resolved the tap; the Pi never sees a coordinate for it.
+
+    This is the other half of the same D13 rule the touch test covers. Touch
+    stays a position because the Pi must not invent navigation from it — and
+    the way an option gets chosen by finger instead is for the side that drew
+    the option to say which one it drew.
+    """
+    rig.send(Message.build(InputChoice(index=1, option="Deny")))
+
+    event = await rig.next_event()
+
+    assert isinstance(event, ChoiceSelection)
+    assert (event.index, event.option) == (1, "Deny")
+    assert rig.router.stats.choices == 1
+    # Not counted as a touch: they are different facts and `nomad status`
+    # showing one as the other would hide a panel that reports positions but
+    # never resolves them.
+    assert rig.router.stats.touches == 0
+
+
+async def test_a_selection_with_no_index_is_malformed_not_silently_zero(rig: Rig) -> None:
+    """Defaulting a missing index to 0 would pick the first option — which on
+    an authorization prompt is the one that says yes."""
+    rig.send(Message(type="input.choice", payload={"option": "Allow"}))
+    rig.send(Message.build(InputButton(button="a", phase=KeyPhase.PRESS)))
+
+    event = await rig.next_event()
+
+    assert isinstance(event, InputAction)
+    assert rig.router.stats.malformed == 1
+    assert rig.router.stats.choices == 0

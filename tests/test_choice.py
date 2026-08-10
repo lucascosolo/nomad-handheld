@@ -19,7 +19,13 @@ from nomad.input.choice import (
 )
 from nomad.input.mapper import InputMapper
 from nomad.input.stream import InputStream
-from nomad.protocol.messages import ButtonId, InputButton, InputJoystick, KeyPhase
+from nomad.protocol.messages import (
+    ButtonId,
+    InputButton,
+    InputChoice,
+    InputJoystick,
+    KeyPhase,
+)
 
 
 class Recorder:
@@ -169,3 +175,86 @@ async def test_unrelated_buttons_do_not_answer_the_question(button: ButtonId) ->
     result = await asking
     await stream.stop()
     assert result.outcome is ChoiceOutcome.TIMED_OUT
+
+
+# -- answering with a finger ------------------------------------------------
+#
+# A tap is navigation and confirmation in one gesture, so a selection answers
+# immediately — there is no highlight to move first. The panel resolved the
+# coordinate into an index before it reached the wire (D13), so nothing below
+# hit-tests anything.
+
+
+async def _tap(stream: InputStream, index: int, option: str = "") -> None:
+    await stream.feed_choice(InputChoice(index=index, option=option))
+
+
+async def test_tapping_an_option_answers_the_question() -> None:
+    prompter, stream, _ = await _prompter()
+    asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Yes", "No"]))
+    await asyncio.sleep(0.05)
+    await _tap(stream, 1, "No")
+
+    result = await asking
+    await stream.stop()
+    assert result.outcome is ChoiceOutcome.ANSWERED
+    assert (result.option, result.index) == ("No", 1)
+
+
+async def test_a_tap_needs_no_label_to_be_an_answer() -> None:
+    """A firmware too small to echo the label still works — it just gets no
+    staleness check, which is the pre-existing behaviour, not a regression."""
+    prompter, stream, _ = await _prompter()
+    asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Yes", "No"]))
+    await asyncio.sleep(0.05)
+    await _tap(stream, 0)
+
+    result = await asking
+    await stream.stop()
+    assert (result.option, result.index) == ("Yes", 0)
+
+
+async def test_a_tap_naming_an_option_this_question_does_not_have_is_ignored() -> None:
+    """The panel is showing a screen this consumer is not asking. The question
+    stays up rather than resolving into whatever was nearest."""
+    prompter, stream, _ = await _prompter(timeout=0.4)
+    asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Yes", "No"]))
+    await asyncio.sleep(0.05)
+    await _tap(stream, 7, "Something else")
+
+    result = await asking
+    await stream.stop()
+    assert result.outcome is ChoiceOutcome.TIMED_OUT
+
+
+async def test_a_tap_whose_label_does_not_match_cannot_answer() -> None:
+    """The screen was replaced between the draw and the finger.
+
+    This is the whole reason the label is on the wire. Index 0 is a perfectly
+    valid option here, so without the label check this tap would resolve — and
+    on an authorization prompt index 0 is the one that says yes. Approving what
+    arrived while you were reading is not approving what you read.
+    """
+    prompter, stream, _ = await _prompter(timeout=0.4)
+    asking = asyncio.ensure_future(prompter.ask("Delete the disk?", ["Allow", "Deny"]))
+    await asyncio.sleep(0.05)
+    await _tap(stream, 0, "Yes")  # from the previous question, still in flight
+
+    result = await asking
+    await stream.stop()
+    assert result.outcome is ChoiceOutcome.TIMED_OUT
+
+
+async def test_an_ignored_tap_does_not_stop_the_buttons_working() -> None:
+    """A stale tap costs that tap and nothing else — the prompt is still live."""
+    prompter, stream, _ = await _prompter()
+    asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Yes", "No"]))
+    await asyncio.sleep(0.05)
+    await _tap(stream, 4, "Gone")
+    await asyncio.sleep(0.05)
+    await _press(stream, ButtonId.A)
+
+    result = await asking
+    await stream.stop()
+    assert result.outcome is ChoiceOutcome.ANSWERED
+    assert result.option == "Yes"

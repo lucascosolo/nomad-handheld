@@ -33,8 +33,21 @@ from dataclasses import dataclass
 
 from nomad.core.config import InputConfig
 from nomad.input.actions import ActionRegistry
-from nomad.input.events import ActionPhase, InputAction, InputSource, TouchEvent
-from nomad.protocol.messages import ButtonId, InputButton, InputJoystick, InputTouch, KeyPhase
+from nomad.input.events import (
+    ActionPhase,
+    ChoiceSelection,
+    InputAction,
+    InputSource,
+    TouchEvent,
+)
+from nomad.protocol.messages import (
+    ButtonId,
+    InputButton,
+    InputChoice,
+    InputJoystick,
+    InputTouch,
+    KeyPhase,
+)
 
 _TIME_EPSILON_S = 1e-6
 
@@ -149,6 +162,13 @@ class InputMapper:
     def on_touch(self, payload: InputTouch, *, now: float | None = None) -> TouchEvent:
         now = now if now is not None else self._clock()
         return TouchEvent(x=payload.x, y=payload.y, phase=payload.phase, ts=now)
+
+    def on_choice(self, payload: InputChoice, *, now: float | None = None) -> ChoiceSelection:
+        """Timestamp a selection and pass it through. There is nothing to map:
+        the sender already did the only mapping that needed device knowledge,
+        which is why this arrives as an index and not a coordinate."""
+        now = now if now is not None else self._clock()
+        return ChoiceSelection(index=payload.index, option=payload.option, ts=now)
 
     # -- repeat --------------------------------------------------------
 

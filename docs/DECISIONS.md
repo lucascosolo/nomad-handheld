@@ -222,6 +222,23 @@ Physical → logical mapping lives in TOML. **No application code may reference 
 GPIO pin, a button index, or a raw key code.** UI and games subscribe to logical
 actions only.
 
+**Touch stays a position, and a tap on an option is not one.** Raw touch is
+never turned into navigation — a finger is not a joystick, and guessing which
+option it meant requires the fonts, the wrapping and the line height. The side
+that has all three is the panel, so the panel does the hit test and sends
+`input.choice {index, option}`: already logical, no coordinate, nothing on the
+Pi duplicating a layout it does not own. It reaches the same `InputStream` as
+everything else, as a third event shape (`ChoiceSelection`) alongside
+`InputAction` and `TouchEvent` — not as a synthesized `CONFIRM`, because it
+names an option of a *specific* question and a consumer that has moved on has
+to be able to tell.
+
+`option` is the label the sender believes it drew, and a mismatch is dropped
+rather than answered. Screens are replaced asynchronously, so without it a tap
+in flight could resolve the prompt that replaced the one the operator read —
+which on an authorization prompt is exactly the failure that matters. It is the
+wire's version of the token `ExternalChoicePrompter` gives the browser.
+
 *Why:* Two consumers with opposite needs — menus want touch-first, games want
 low-latency controller input — must not fork the input path. And the hardware
 will change: pin assignments are a wiring detail, not an API.

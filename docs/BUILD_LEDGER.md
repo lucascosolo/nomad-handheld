@@ -9,6 +9,48 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (late) — a finger can answer
+
+**A tap on an option now answers the question.** The prompt has been drawable
+and answerable-by-joystick since chunk W; the glass could show "Allow / Deny"
+and touching either did nothing, which on a touchscreen device reads as broken.
+
+**The panel does the hit test, not the Pi.** That is the whole design decision.
+The Pi is sent structure rather than pixels precisely so it does not keep a
+copy of the firmware's fonts, wrapping and line height — and hit-testing raw
+coordinates on the Pi would mean keeping exactly that, and being silently wrong
+about every option the moment either side's layout changed. So `renderChoice`
+records the row rectangles it drew, a tap inside one sends the new
+`input.choice {index, option}`, and what crosses the wire is already logical.
+D13 forbids synthesizing navigation from touch; this makes that unnecessary
+rather than merely forbidden. Raw `input.touch` is still sent as well — an app
+drawing its own framebuffer needs the position.
+
+**`option` is a staleness guard, not decoration.** Screens are replaced
+asynchronously, so a tap in flight can arrive after the question it was aimed
+at is gone. Index 0 is valid on almost any question, and on an authorization
+prompt index 0 is usually the one that says yes — so without the label check a
+late finger could approve something the operator never read. A mismatch is
+dropped and the prompt stays up. It is the wire's version of the token
+`ExternalChoicePrompter` gives the browser.
+
+`ChoiceSelection` is a third event shape beside `InputAction` and `TouchEvent`,
+not a synthesized `CONFIRM`: it names an option of a *specific* question, and a
+consumer that has moved on has to be able to tell.
+
+**Untested on glass.** The Pi is powered down, so the firmware half compiles
+nowhere and has never met a finger. The Python half is covered end to end
+(framed bytes in at the transport, a `ChoiceResult` out), and the firmware
+change is small and local, but *the hit rectangles have not been seen to line
+up with the drawn rows.* That is the first thing to check when the device comes
+back — with the panel flashed from the Pi, as in chunk W.
+
+Suite: **965 passed**, run as two halves (377 + 588). The laptop could not
+finish a single run: three Claude processes were holding ~1.6 GB with 1.2 GB in
+swap and load average above 10, and two full-suite attempts were killed at 600s
+and 1500s having reached 100% and 50%. Splitting the run is the workaround; the
+suite itself takes about four minutes when the machine is quiet.
+
 ### 2026-08-09 (late) — the shadowed-tool hole in D21 is closed
 
 **`Skill` now reaches the broker.** It never did: `skills = "all"` becomes an

@@ -35,7 +35,14 @@ from nomad.core.errors import ProtocolError
 from nomad.core.logging import get_logger
 from nomad.input.stream import InputStream
 from nomad.protocol.link import Link
-from nomad.protocol.messages import InputButton, InputJoystick, InputTouch, Message, MessageType
+from nomad.protocol.messages import (
+    InputButton,
+    InputChoice,
+    InputJoystick,
+    InputTouch,
+    Message,
+    MessageType,
+)
 
 logger = get_logger(__name__)
 
@@ -48,6 +55,8 @@ class RouterStats:
     buttons: int = 0
     joystick: int = 0
     touches: int = 0
+    #: Taps the panel resolved to an option of a `choice` screen.
+    choices: int = 0
     #: Messages this build has no handler for. Expected and harmless.
     ignored: int = 0
     #: Messages of a known input type whose payload would not parse. Not
@@ -98,6 +107,7 @@ class InputRouter:
                 "joystick",
             ),
             str(MessageType.INPUT_TOUCH): (InputTouch, self._stream.feed_touch, "touches"),
+            str(MessageType.INPUT_CHOICE): (InputChoice, self._stream.feed_choice, "choices"),
         }
         entry = handlers.get(message.type)
         if entry is None:

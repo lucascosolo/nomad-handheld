@@ -93,6 +93,7 @@ class MessageType(StrEnum):
     DISPLAY_BACKLIGHT = "display.backlight"
     DISPLAY_STATE = "display.state"
     INPUT_TOUCH = "input.touch"
+    INPUT_CHOICE = "input.choice"
     INPUT_JOYSTICK = "input.joystick"
     INPUT_BUTTON = "input.button"
     HID_KEY = "hid.key"
@@ -212,6 +213,35 @@ class InputTouch(PayloadModel):
     phase: TouchPhase
 
 
+class InputChoice(PayloadModel):
+    """A tap that landed on an option of a `choice` screen, resolved by the
+    side that drew it.
+
+    D13 forbids synthesizing navigation from touch, and this does not violate
+    it — it *avoids* it. The alternative was for the Pi to hit-test raw
+    coordinates, which means the Pi keeping a second copy of the firmware's
+    font metrics, wrapping and line height, and being silently wrong about
+    every option the moment either side's layout changes. The panel owns
+    layout, so the panel owns the hit test, and what crosses the wire is
+    already logical: "option 2 was chosen".
+
+    `option` is the label the firmware believes it drew. The Pi checks it
+    against the question it is actually asking and drops a mismatch. Screens
+    are replaced asynchronously — a prompt can be superseded between the draw
+    and the finger — and for an *authorization* prompt the difference between
+    approving what you read and approving what arrived while you were reading
+    is the whole point of asking. It is the same guard `PendingQuestion.token`
+    gives the browser, in the form the wire can carry.
+    """
+
+    message_type: ClassVar[MessageType] = MessageType.INPUT_CHOICE
+
+    index: int = Field(ge=0)
+    #: Empty is allowed: firmware too small to echo the label still works, it
+    #: just gets no staleness check.
+    option: str = ""
+
+
 class InputJoystick(PayloadModel):
     message_type: ClassVar[MessageType] = MessageType.INPUT_JOYSTICK
 
@@ -288,6 +318,7 @@ _DISPLAY_CATALOGUE: dict[str, type[PayloadModel]] = {
     MessageType.DISPLAY_BLIT: DisplayBlit,
     MessageType.DISPLAY_BACKLIGHT: DisplayBacklight,
     MessageType.INPUT_TOUCH: InputTouch,
+    MessageType.INPUT_CHOICE: InputChoice,
     MessageType.INPUT_JOYSTICK: InputJoystick,
     MessageType.INPUT_BUTTON: InputButton,
     MessageType.SYSTEM_HELLO: SystemHello,

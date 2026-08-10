@@ -577,6 +577,7 @@ megabytes.
 | `display.blit` | Pi → ESP32 | `{x, y, region_id}` |
 | `display.backlight` | Pi → ESP32 | `{level: 0-255}` |
 | `input.touch` | ESP32 → Pi | `{x, y, phase: down\|move\|up}` |
+| `input.choice` | ESP32 → Pi | `{index, option}` — a tap the panel resolved to an option of a `choice` screen |
 | `input.joystick` | ESP32 → Pi | `{x: -1.0..1.0, y: -1.0..1.0}` |
 | `input.button` | ESP32 → Pi | `{button: a\|b\|x\|y, phase: press\|release}` |
 | `system.hello` | either | `{firmware_version, capabilities}` — on connect |

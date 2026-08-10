@@ -6,7 +6,8 @@
 //   1. Speaks D30's framing over native USB CDC, with D3's JSON envelope.
 //   2. Renders `display.state` — text, card, list, choice — with its own fonts
 //      and layout, because E2 sends *structure* rather than pixels.
-//   3. Reports touch as `input.touch`.
+//   3. Reports touch as `input.touch`, and — on a `choice` screen — reports
+//      which option a tap landed on as `input.choice`.
 //
 // It holds no application state and makes no decisions. If the Pi says nothing,
 // the screen says the link is idle; it does not invent a status screen of its
@@ -30,7 +31,7 @@
 #include "framing.h"
 #include "panel.h"
 
-static const char *kFirmwareVersion = "nomad-face 0.1.0";
+static const char *kFirmwareVersion = "nomad-face 0.2.0";
 
 static nomad::NomadDisplay display;
 static nomad::Framing framing;
@@ -98,6 +99,7 @@ static void sendHello() {
   capabilities.add("display.state");
   capabilities.add("display.backlight");
   capabilities.add("input.touch");
+  capabilities.add("input.choice");
   sendMessage("system.hello");
 }
 
@@ -114,6 +116,36 @@ static void sendError(const char *code, const char *detail) {
   payload["code"] = code;
   payload["detail"] = detail;
   sendMessage("system.error");
+}
+
+// The panel is the only side that knows where an option ended up: it owns the
+// font, the wrapping and the line height, and the Pi is sent structure rather
+// than pixels precisely so it does not have to keep a second copy of any of
+// that. So the hit test lives here, and what crosses the wire is already
+// logical — "option 2", not "(146, 118)". D13 forbids the Pi synthesizing
+// navigation from raw touch; this is what makes that unnecessary rather than
+// merely forbidden.
+//
+// Eight is the most options the screen fits at this line height, so a longer
+// list is truncated at render time and there is nothing below the eighth to
+// tap. The label is echoed so the Pi can drop a tap that answered a screen it
+// has already replaced.
+static const int kMaxChoiceHits = 8;
+
+struct ChoiceHit {
+  int top;
+  int bottom;
+  char label[40];
+};
+
+static ChoiceHit choiceHits[kMaxChoiceHits];
+static int choiceHitCount = 0;
+
+static void sendChoice(int index, const char *label) {
+  JsonObject payload = outgoing.createNestedObject("payload");
+  payload["index"] = index;
+  payload["option"] = label;
+  sendMessage("input.choice");
 }
 
 static void sendTouch(int x, int y, const char *phase) {
@@ -315,7 +347,18 @@ static void renderChoice(JsonObjectConst payload) {
     display.setTextColor(kAccent, kBackground);
     display.drawString(prefix, 12, y);
     display.setTextColor(kForeground, kBackground);
-    display.drawString(option.as<const char *>(), 34, y);
+    const char *label = option.as<const char *>();
+    display.drawString(label, 34, y);
+
+    if (choiceHitCount < kMaxChoiceHits) {
+      ChoiceHit &hit = choiceHits[choiceHitCount++];
+      // The row, not the glyphs: a finger is far wider than a text baseline,
+      // and an operator aiming at "Deny" must not miss it by four pixels.
+      hit.top = y - 2;
+      hit.bottom = y + 18;
+      snprintf(hit.label, sizeof(hit.label), "%s", label ? label : "");
+    }
+
     y += 20;
     index++;
   }
@@ -323,6 +366,11 @@ static void renderChoice(JsonObjectConst payload) {
 
 static void renderState(JsonObjectConst payload) {
   const char *kind = payload["kind"] | "text";
+
+  // Cleared before every render, so a tap can only ever answer the screen that
+  // is on the glass right now. Leaving stale rectangles behind would let a
+  // finger arriving after a redraw answer a question that is gone.
+  choiceHitCount = 0;
 
   if (strcmp(kind, "card") == 0) {
     renderCard(payload);
@@ -437,6 +485,15 @@ static void pumpTouch() {
     lastY = y;
   } else if (wasDown) {
     sendTouch(lastX, lastY, "up");
+    // Raw touch is still reported, always: an app drawing its own framebuffer
+    // needs the position, and `input.choice` is an addition to the truth on
+    // the wire rather than a replacement for it.
+    for (int i = 0; i < choiceHitCount; i++) {
+      if (lastY >= choiceHits[i].top && lastY <= choiceHits[i].bottom) {
+        sendChoice(i, choiceHits[i].label);
+        break;
+      }
+    }
   }
   wasDown = down;
 #endif

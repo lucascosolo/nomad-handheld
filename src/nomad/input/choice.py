@@ -31,7 +31,7 @@ from enum import StrEnum
 
 from nomad.core.logging import get_logger
 from nomad.input.actions import ACTION_BACK, ACTION_CONFIRM, ACTION_NAV_DOWN, ACTION_NAV_UP
-from nomad.input.events import ActionPhase, InputAction
+from nomad.input.events import ActionPhase, ChoiceSelection, InputAction
 from nomad.input.stream import InputStream
 
 logger = get_logger(__name__)
@@ -251,6 +251,11 @@ class ExternalChoicePrompter:
 class InputChoicePrompter:
     """Draws a question and consumes the action stream until it is answered.
 
+    Two ways to answer, one code path. The joystick moves a highlight and a
+    button confirms it; a finger names an option directly, because the panel
+    resolved the tap into an index before it reached the wire (D13). Nothing
+    here hit-tests a coordinate.
+
     Navigation is edge-triggered — `PRESS` only — so holding the stick does not
     race through the options. That is the menu half of the one-stream design in
     `input/mapper.py`: this consumer simply ignores `REPEAT`.
@@ -280,11 +285,45 @@ class InputChoicePrompter:
             logger.info("Choice prompt expired", extra={"question": question})
             return ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT)
 
+    @staticmethod
+    def _selected(event: ChoiceSelection, options: list[str]) -> ChoiceResult | None:
+        """A tap on an option, or `None` if it cannot be trusted to be one.
+
+        A tap is navigation and confirmation in one gesture — there is no
+        highlight to move first — so a good selection answers immediately.
+
+        Two ways it is refused, and both are dropped silently rather than
+        answered wrongly. An index off the end means the sender drew a screen
+        this consumer is not showing. A stated label that does not match the
+        option at that index means the same thing more precisely: the screen
+        was replaced between the draw and the finger. On an authorization
+        prompt that is the difference between approving what the operator read
+        and approving what arrived while they were reading, so it can never
+        resolve into an answer. The question simply stays up.
+        """
+        if not 0 <= event.index < len(options):
+            logger.info("Ignored a selection for an option this question does not have")
+            return None
+        if event.option and event.option != options[event.index]:
+            logger.info("Ignored a selection whose label does not match the question on screen")
+            return None
+        return ChoiceResult(
+            outcome=ChoiceOutcome.ANSWERED,
+            option=options[event.index],
+            index=event.index,
+        )
+
     async def _run(self, question: str, options: list[str]) -> ChoiceResult:
         highlighted = 0
         await self._show(question, options, highlighted)
 
         async for event in self._stream.events():
+            if isinstance(event, ChoiceSelection):
+                result = self._selected(event, options)
+                if result is not None:
+                    return result
+                continue
+
             if not isinstance(event, InputAction) or event.phase is not ActionPhase.PRESS:
                 # Touch events and REPEAT are not menu navigation. Ignoring
                 # REPEAT here is what makes this edge-triggered.
