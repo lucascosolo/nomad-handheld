@@ -8,10 +8,22 @@ from nomad.core.config import NomadConfig, PermissionMode, load_config
 from nomad.core.errors import ConfigError
 
 
-def test_load_real_nomad_toml() -> None:
-    """The actual committed nomad.toml must parse and validate cleanly."""
+def test_load_real_nomad_toml(tmp_path: Path) -> None:
+    """The actual committed nomad.toml must parse and validate cleanly.
+
+    Copied out of the repo before loading, because `load_config` layers a
+    sibling `nomad.local.toml` over it (D8) — and reading the repo in place
+    therefore asserts against *this machine's* config, not the committed one.
+    On the laptop there is no local file and it passed; on the Pi, whose local
+    file sets `mode = "auto"`, it failed. A test that only passes where nobody
+    has configured anything is worse than no test: the device's suite is the
+    D22 self-modification gate, so a red test there stops Nomad working on his
+    own code, over a difference that is not a defect.
+    """
     repo_root = Path(__file__).resolve().parents[1]
-    config = load_config(repo_root / "nomad.toml", env={})
+    committed = tmp_path / "nomad.toml"
+    committed.write_text((repo_root / "nomad.toml").read_text())
+    config = load_config(committed, env={})
 
     assert isinstance(config, NomadConfig)
     assert config.core.name == "nomad"
