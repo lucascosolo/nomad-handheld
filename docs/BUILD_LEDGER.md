@@ -73,6 +73,16 @@ asked for. Four properties do the real work, and all four are tested:
 Layering gained `triggers → {core, agent}`, declared in `test_layering.py` and
 in `CLAUDE.md`.
 
+**Deployed and enabled on the device, and the loop was watched rather than
+assumed.** `nomad.local.toml` sets `[triggers.self_improve].enabled = true`.
+With the interval temporarily dropped to 60s and the service restarted, the
+log shows `Skipping self-improvement: the backend is not ready to run a turn`
+— so the tick runs on the Pi and the readiness guard does what it was built
+for. Interval restored to an hour. Component order on the device is
+`... panel_keeper, agent_session, self_improve_trigger`, which is the intended
+one: the keeper is retired before the link it writes through, and the trigger
+starts after the session it drives.
+
 **The one thing standing between this and a running loop is a login.** The
 device reports `auth: expired` — `claude auth status` says `loggedIn: false` —
 and that is interactive, so it is the operator's to run on the device:
