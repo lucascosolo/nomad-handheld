@@ -83,11 +83,35 @@ for. Interval restored to an hour. Component order on the device is
 one: the keeper is retired before the link it writes through, and the trigger
 starts after the session it drives.
 
-**The one thing standing between this and a running loop is a login.** The
-device reports `auth: expired` — `claude auth status` says `loggedIn: false` —
-and that is interactive, so it is the operator's to run on the device:
-`ssh nomad@nomad.local` then `claude auth login`. Until then the trigger
-correctly refuses to fire, which is why it was built to check.
+**Nomad has now run a turn nobody asked for.** The operator logged in on the
+device (`claude auth login`, which writes `~/.claude/.credentials.json`; note
+that `claude setup-token` does *not* — it prints a token that has to be put in
+`/etc/nomad.env` as `CLAUDE_CODE_OAUTH_TOKEN`, and running it leaves
+`auth status` still saying `loggedIn: false`, which cost a round trip to work
+out). Backend went `ready`, and with the interval temporarily at 60s the
+`turns` table recorded `source='self', status='running'` with permission
+decisions flowing. Provenance and the loop are both real, observed on the
+device rather than inferred. Interval restored to an hour and left enabled.
+
+**Two things the first self-directed turn exposed, both worth fixing and
+neither fixed here:**
+
+1. **The mid-turn screen says almost nothing.** `renderer._draw_partial`
+   draws `show_text("…", title=f"Running {tool}")`, so a long Bash call
+   presents as the title "Running Bash" over a single ellipsis, held until the
+   next event. The operator read it as broken, which is the right reaction:
+   NOMAD.md's own promise is that one second of looking tells you whether the
+   device is working, waiting or idle, and an ellipsis tells you none of it.
+   The card should carry what is being run and for how long.
+2. **A self turn is slow to get anywhere and leaves no worktree.** Ten
+   minutes in, `~/nomad-scratch` was still empty and the turn was reading —
+   with repeated `Workspace boundary rejected a path` warnings. Worth
+   confirming that D22's scratch path is actually reachable under
+   `[workspace].root = var/workspace`: if every write outside the workspace is
+   refused, the skill's own instructions cannot be followed and self-improvement
+   is blocked by construction. That is a *check*, not yet a finding — the
+   warnings may be ordinary exploration of paths that were never going to be
+   written.
 
 Suite: **1003 passed** (3:22 on the laptop), ruff clean, re-run by the
 coordinating session rather than taken from the subagent's report.
