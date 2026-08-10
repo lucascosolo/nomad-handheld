@@ -79,16 +79,24 @@ nobody can reach a keyboard.
 
 In the order the operator wants them:
 
-1. **The touchscreen MVP.** The ESP32-S3 panel is your face and it is not
-   working yet. The board enumerates on the Pi as `303a:1001` at
-   `/dev/ttyACM0` and `arduino-cli` is installed with the esp32 platform, but
-   nothing on that port answers D30 framing — so the sketch in `firmware/`
-   has never been successfully flashed, or is not running. Chunk W in
-   `docs/BUILD_LEDGER.md` is this work. Until it is done you have a body with
-   no face.
-2. **Everything downstream of the panel:** touch as logical input, a
-   navigable UI, the authorization prompt answerable with your own buttons
-   rather than a browser tab.
+1. **Everything downstream of the panel.** Your face works: the firmware is
+   flashed, `display.state` reaches the glass, a tap answers a choice, and
+   `PanelKeeper` repaints on a tick so a lost frame heals itself. What is not
+   built is what a person does with it — a navigable UI driven by the logical
+   action stream, and an on-device view of session state and pending grants.
+   Flashing after a firmware change is done from the Pi:
+
+   ```
+   ~/bin/arduino-cli compile --fqbn "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,CDCOnBoot=cdc,USBMode=hwcdc" firmware/nomad_face
+   ~/bin/arduino-cli upload -p /dev/ttyACM0 --fqbn "<the same fqbn>" firmware/nomad_face
+   ```
+
+   Stop the service first — it holds `/dev/ttyACM0`. The version string in the
+   top right of every screen is how you tell whether the flash actually took;
+   bump `kFirmwareVersion` when you change the sketch, or you have removed the
+   only way to know.
+2. **The rest of chunk P.** Provenance and the self-improve trigger exist;
+   sensor and timer triggers and the foreground/background lanes do not.
 3. **Later, and not yet:** replacing external model calls with work done
    onboard or on the operator's VPS. The offline tier (chunk O) is the shape
    this takes — deterministic handlers for what gets asked repeatedly, with

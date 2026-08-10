@@ -427,6 +427,44 @@ class ResourcesConfig(BaseModel):
     resume_delay_seconds: float = 3.0
 
 
+class SelfImproveTriggerConfig(BaseModel):
+    """Nomad's own scheduled time to work on himself (chunk P, D22).
+
+    **`enabled` ships `false` and that is the decision, not the default.** Every
+    other subsystem on this device is off until something asks it for
+    something; this one starts turns, and turns cost tokens and touch a git
+    worktree. A device that begins spending both because it was plugged in has
+    made a call that belongs to whoever is paying. The Pi's gitignored
+    `nomad.local.toml` is where it becomes true.
+
+    `interval_seconds` is an hour because the unit of work is "open a scratch
+    worktree, change something, run the suite" — minutes of real work on this
+    hardware — not a poll. A short interval here does not get more
+    improvement, it gets the device permanently busy with itself.
+
+    `max_consecutive_failures` is the runaway brake. Three in a row is not bad
+    luck; it is a device that is logged out, out of disk, or has a wedged
+    backend, and the right response to all three is to stop and be loud rather
+    than to keep trying every hour until someone notices the token bill.
+    """
+
+    enabled: bool = False
+    interval_seconds: float = 3600.0
+    max_consecutive_failures: int = 3
+
+
+class TriggersConfig(BaseModel):
+    """What may start a turn nobody asked for.
+
+    A section of its own rather than keys under `[agent]`, because the agent
+    answers turns and these decide that a turn happens at all — and because
+    the next two members (timers, sensors) belong beside this one rather than
+    scattered across the sections whose hardware they read.
+    """
+
+    self_improve: SelfImproveTriggerConfig = Field(default_factory=SelfImproveTriggerConfig)
+
+
 class CameraConfig(BaseModel):
     driver: str = "mock"
 
@@ -529,6 +567,7 @@ class NomadConfig(BaseModel):
     usb_hid: UsbHidConfig = Field(default_factory=UsbHidConfig)
     battery: BatteryConfig = Field(default_factory=BatteryConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
+    triggers: TriggersConfig = Field(default_factory=TriggersConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)
     sensors: SensorsConfig = Field(default_factory=SensorsConfig)
     transports: TransportsConfig = Field(default_factory=TransportsConfig)

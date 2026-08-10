@@ -259,6 +259,29 @@ terminate_grace_seconds = 1.0
 # between two of them.
 resume_delay_seconds = 3.0
 
+# What may start a turn nobody asked for. (chunk P)
+[triggers.self_improve]
+# Nomad's own scheduled time to work on himself, following the
+# `improving-yourself` skill: a scratch worktree, the suite as the gate, and a
+# report rather than a merge (D22).
+#
+# OFF, and this is the one default that is a decision rather than a
+# convenience. Turning it on is a standing authorisation to spend tokens and
+# open worktrees with nobody watching, which is the operator's call and not the
+# shipped config's. Switch it on in nomad.local.toml on the device.
+enabled = false
+# An hour, because the unit of work is "change something and run the whole
+# suite" - minutes of real work on a Pi - not a poll. A tick that lands while a
+# turn is in flight is skipped, never queued: waiting for the lock would mean
+# answering the operator's question and then, unprompted, starting on its own.
+interval_seconds = 3600.0
+# Three failures in a row is not bad luck - it is a logged-out CLI, a full
+# disk, or a wedged backend - so the loop stops loudly and stays stopped until
+# a restart. Note that a *failed turn* counts here, not just a raised one: the
+# session turns a backend failure into a failed outcome, and an hourly turn
+# that fails identically forever is exactly the runaway this bounds.
+max_consecutive_failures = 3
+
 [usb_hid]
 driver = "mock"          # mock | rp2040
 

@@ -356,12 +356,44 @@ async def _migration_005_offline(db: Database) -> None:
     )
 
 
+async def _migration_006_turn_source(db: Database) -> None:
+    """Where each turn came from (chunk P).
+
+    A column and not a metadata key, because provenance is the thing a
+    transcript is filtered and audited on: "show me every turn nobody asked
+    for" has to be a `WHERE`, not a JSON scan the day the table is large.
+
+    `DEFAULT 'user'` is what migrates the existing rows, and it is honest —
+    until this migration ran there was exactly one way for a turn to begin,
+    and it was somebody typing. SQLite backfills the default into every
+    existing row as part of `ADD COLUMN`, so there is no separate UPDATE to
+    get wrong.
+
+    The `CHECK` matches migration 001's treatment of `turns.status` and exists
+    for the same reason that column's comment in `agent/session.py` records:
+    an unconstrained status column let a mis-spelled value through until every
+    finished turn failed. A vocabulary written to disk should be enforced by
+    the disk.
+    """
+    columns = {row["name"] for row in await db.fetch_all("PRAGMA table_info(turns)")}
+    if "source" in columns:
+        # `ADD COLUMN` is not `IF NOT EXISTS`-able, so idempotence is checked
+        # rather than declared — the second line of defence this module's
+        # docstring asks every migration for.
+        return
+    await db.execute(
+        "ALTER TABLE turns ADD COLUMN source TEXT NOT NULL DEFAULT 'user' "
+        "CHECK (source IN ('user', 'timer', 'sensor', 'self'))"
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _migration_001_initial_schema,
     _migration_002_memories,
     _migration_003_notifications,
     _migration_004_utilities,
     _migration_005_offline,
+    _migration_006_turn_source,
 ]
 
 

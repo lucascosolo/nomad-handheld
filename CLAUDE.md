@@ -38,12 +38,19 @@ drift, and it did. Add to a file rather than starting one.
 ## Layering
 
 ```
-api  →  agent  →  tools  →  targets/hardware  →  protocol  →  core
+api  →  triggers  →  agent  →  tools  →  targets/hardware  →  protocol  →  core
 ```
 
 Dependencies point one way only. `core` and `protocol` depend on nothing above
 them. **Nothing imports `api`.** `tests/test_layering.py` enforces this — if it
 fails, the fix is the import, not the test.
+
+`triggers` is what begins a turn nobody asked for (chunk P). It drives
+`AgentSession`; the session knows nothing about it. That is why `TurnSource`
+lives in `nomad.core.turns` — `agent` must be able to stamp a turn with its
+provenance without importing the package that produces unprompted ones. A
+trigger that needs something from the composition root (backend readiness, a
+battery read) is handed a callable by `app.py` rather than importing upwards.
 
 ## Conventions
 

@@ -279,6 +279,33 @@ async def test_a_panel_gets_a_keeper_and_it_is_a_started_component(tmp_path: Pat
     assert app.states()["panel_keeper"] is ComponentState.STOPPED
 
 
+async def test_the_self_improve_trigger_is_built_and_started_when_enabled(tmp_path: Path) -> None:
+    """Chunk P's join. Six subsystems shipped green and inert because nothing
+    constructed them; this asserts the composition root does, and that the
+    trigger is a started component rather than a built one."""
+    app = NomadApp(
+        _config(tmp_path, triggers={"self_improve": {"enabled": True, "interval_seconds": 3600.0}})
+    )
+    assert app.self_improve is not None
+    # After the session, because it drives it.
+    order = [c.name for c in app._ordered_components()]
+    assert order.index("self_improve_trigger") > order.index("agent_session")
+    await app.start()
+    try:
+        assert app.states()["self_improve_trigger"] is ComponentState.STARTED
+    finally:
+        await app.stop()
+    assert app.states()["self_improve_trigger"] is ComponentState.STOPPED
+
+
+async def test_the_self_improve_trigger_is_off_by_default(tmp_path: Path) -> None:
+    """A device that starts spending tokens unasked is an operator decision."""
+    assert NomadConfig().triggers.self_improve.enabled is False
+    app = NomadApp(_config(tmp_path))
+    assert app.self_improve is None
+    assert "self_improve_trigger" not in [c.name for c in app._ordered_components()]
+
+
 async def test_a_device_with_no_panel_has_no_keeper(tmp_path: Path) -> None:
     """Nothing to repair on an in-process surface that cannot miss a write."""
     app = NomadApp(_config(tmp_path, display={"driver": "headless"}))

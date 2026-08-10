@@ -75,7 +75,7 @@ from nomad.protocol import Link, LinkKind, create_transport
 from nomad.resources.governor import ResourceGovernor
 from nomad.resources.workload import InteractiveWorkload
 from nomad.skills.library import SkillLibrary, default_seed_root
-from nomad.status import STATUS_WRITER, collect_status, status_rows
+from nomad.status import STATUS_WRITER, collect_status, probe_backend, status_rows
 from nomad.storage.db import Database
 from nomad.storage.migrations import migrate
 from nomad.storage.repositories.conversations import ConversationsRepository
@@ -85,6 +85,7 @@ from nomad.targets.registry import TargetRegistry
 from nomad.tools.base import Tool
 from nomad.tools.builtin import build_default_registry
 from nomad.tools.workspace import Workspace
+from nomad.triggers import SelfImproveTrigger
 from nomad.utilities.notes import NoteStore
 from nomad.utilities.stopwatch import StopwatchStore
 from nomad.view.authprompt import (
@@ -355,6 +356,10 @@ class NomadApp:
             if self.notifications is not None
             else None
         )
+        # The first thing on this device that can begin a turn without a person
+        # (chunk P). Built after the session because it drives it, and started
+        # after it for the same reason — see `_ordered_components`.
+        self.self_improve = self._build_self_improve()
         self.governor = self._build_governor()
         # Built last because it resolves through the session, which is what
         # supplies the permission mode the queue's `approve()` needs. Held
@@ -486,6 +491,38 @@ class NomadApp:
             self.display,
             interval_s=self._config.display.repaint_interval_s,
         )
+
+    def _build_self_improve(self) -> SelfImproveTrigger | None:
+        """Nomad's own scheduled turn, when the operator has asked for one.
+
+        `None` unless `[triggers.self_improve].enabled` — off is the shipped
+        answer, because this is the one component whose *existence* spends
+        money. There is deliberately no "build it and let it idle": a trigger
+        constructed but never firing is indistinguishable, from the outside,
+        from the six inert subsystems this file was written to stop happening.
+
+        The readiness probe is passed as a callable rather than reached for.
+        `nomad.status` is a composition-root module and `triggers` is a package
+        below one, so the import would point the wrong way — and the whole
+        point is to use the probe that already exists (a CLI that answers
+        `--version` and a credential that has not expired) rather than to write
+        a second one that will disagree with `nomad status` about whether this
+        device can think.
+        """
+        trigger = self._config.triggers.self_improve
+        if not trigger.enabled:
+            return None
+        return SelfImproveTrigger(
+            self.session,
+            interval_s=trigger.interval_seconds,
+            readiness=self._backend_ready,
+            max_consecutive_failures=trigger.max_consecutive_failures,
+        )
+
+    async def _backend_ready(self) -> bool:
+        """Could a turn actually run right now? The same probe `nomad status` uses."""
+        health = await probe_backend(self._config)
+        return health.ready
 
     async def _redraw_after_reboot(self, event: object) -> None:
         """Put something back on the glass after the panel restarts.
@@ -759,6 +796,13 @@ class NomadApp:
             # logging a repaint failure on the way out.
             components.append(self.panel_keeper)
         components.append(self.session)
+        if self.self_improve is not None:
+            # After the session, because it drives it: a tick that fired before
+            # `AgentSession.start()` would reach a session with no id and no
+            # backend. Stopping in reverse order is the half that matters more
+            # — the trigger is retired first, so nothing can start a new turn
+            # while the session is closing the one in flight.
+            components.append(self.self_improve)
         return components
 
     # -- lifecycle ---------------------------------------------------------

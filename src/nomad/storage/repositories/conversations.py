@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from nomad.core.turns import TurnSource
 from nomad.storage.db import Database
 
 TurnStatus = Literal["pending", "running", "awaiting_grant", "complete", "failed", "aborted"]
@@ -44,6 +45,9 @@ class Turn(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     metadata: dict[str, Any]
+    #: Who began it. Defaults to `USER` so a row written before migration 006
+    #: and a caller that does not care both read the same, and correctly.
+    source: TurnSource = TurnSource.USER
 
 
 class Message(BaseModel):
@@ -76,6 +80,7 @@ def _turn_from_row(row: dict[str, Any]) -> Turn:
         started_at=_parse_dt(row["started_at"]),
         finished_at=_parse_dt(row["finished_at"]),
         metadata=json.loads(row["metadata_json"]),
+        source=TurnSource(row.get("source") or TurnSource.USER),
     )
 
 
@@ -125,14 +130,16 @@ class ConversationsRepository:
         status: TurnStatus = "pending",
         metadata: dict[str, Any] | None = None,
         turn_id: str | None = None,
+        source: TurnSource = TurnSource.USER,
     ) -> Turn:
         """Persist a turn *before* execution begins (D11)."""
         tid = turn_id or _new_id()
         started_at = _now() if status != "pending" else None
         await self._db.execute(
-            "INSERT INTO turns (id, session_id, status, started_at, finished_at, metadata_json) "
-            "VALUES (?, ?, ?, ?, NULL, ?)",
-            (tid, session_id, status, started_at, json.dumps(metadata or {})),
+            "INSERT INTO turns "
+            "(id, session_id, status, started_at, finished_at, metadata_json, source) "
+            "VALUES (?, ?, ?, ?, NULL, ?, ?)",
+            (tid, session_id, status, started_at, json.dumps(metadata or {}), str(source)),
         )
         return Turn(
             id=tid,
@@ -141,6 +148,7 @@ class ConversationsRepository:
             started_at=_parse_dt(started_at),
             finished_at=None,
             metadata=metadata or {},
+            source=source,
         )
 
     async def update_turn_status(

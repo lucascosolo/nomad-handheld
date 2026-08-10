@@ -9,6 +9,88 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (night) — the glass heals itself, and Nomad can start a turn
+
+**The panel is verified working, by the operator's eyes, and the bug it
+exposed was fixed by the thing that was being tested.** The screen came up
+saying "waiting for the Pi" and then corrected itself to the status card
+within a tick. That sequence *is* the change: the panel missed the first frame
+because opening the serial port had just reset it, and `PanelKeeper` repainted
+two seconds later. Every earlier symptom of this was reported as "the screen
+still says waiting for the Pi" while the Pi's logs said it had drawn.
+
+**Why a tick rather than another one-shot redraw.** `_redraw_after_reboot`
+handles a reset it can *see* — `seq` going backwards — and it cannot see this
+one: on a fresh connect both sides are at zero, so there is no backwards step
+to detect. The settle-delay redraw written for that case is a guess about
+timing, and it was wrong. A repaint is idempotent, so the tick needs no guess
+and covers the knocked cable and the battery brownout too.
+
+Two things make it affordable rather than wasteful, and neither is optional:
+D30 sends structure and not pixels, so a card is tens of bytes; and the
+firmware now hashes the payload it rendered and skips an identical one.
+Without that second half this loop would strobe the display several times a
+second. The hash is over the *payload*, not the envelope — `seq` and `id`
+change every frame, so hashing the body would defeat the check entirely.
+
+`DisplayFanout.repaint` replays the fanout's last call to one surface and is
+deliberately not a write: it must not disturb the other surfaces, reset their
+failure counters, or count as a frame Nomad decided to draw. It raises where
+`_fan` swallows, because a repaint has no other surface to fall back on and a
+keeper that counted a pulled cable as success would be a lying screen with a
+healthy counter.
+
+**The firmware prints its own version on every screen** (`nomad-face 0.3.0`,
+top right). Reading the glass is the only way to tell whether a flash took —
+an upload can report success while the board comes back on the old image, and
+every symptom of that looks exactly like a bug in the new firmware.
+
+**Chunk P, scoped to the half that unblocks self-improvement.** `TurnSource`
+(`user`/`timer`/`sensor`/`self`) lives in `nomad.core.turns`, because `agent`
+has to stamp a turn with its provenance without importing the package that
+produces unprompted ones. Migration 006 adds `turns.source`, defaulting
+existing rows to `user`. `resume()` now carries a recovered turn's original
+source instead of relabelling it.
+
+`SelfImproveTrigger` is the first thing in this tree that begins a turn nobody
+asked for. Four properties do the real work, and all four are tested:
+
+1. **Off by default.** A device that spends tokens because it was switched on
+   has made a decision belonging to whoever pays for them.
+2. **It skips rather than queues.** `send()` serializes on a lock, so the
+   naive call does not fail during a live turn — it lands minutes later as an
+   answer to nothing the operator asked. `busy` is checked, then readiness,
+   then `busy` again, with no `await` between the last check and `send`.
+3. **It will not fire at a backend that cannot authenticate**, via the probe
+   `nomad status` already uses, injected as a callable so `triggers` does not
+   import a composition-root module.
+4. **Consecutive failures stop it loudly.** Counting *exceptions* alone would
+   not have worked: `_run_turn` catches a backend failure and returns a
+   `FAILED` outcome, so an hourly turn could fail identically forever and look
+   healthy. An interrupted turn is the operator taking the device back and
+   does not spend the budget.
+
+Layering gained `triggers → {core, agent}`, declared in `test_layering.py` and
+in `CLAUDE.md`.
+
+**The one thing standing between this and a running loop is a login.** The
+device reports `auth: expired` — `claude auth status` says `loggedIn: false` —
+and that is interactive, so it is the operator's to run on the device:
+`ssh nomad@nomad.local` then `claude auth login`. Until then the trigger
+correctly refuses to fire, which is why it was built to check.
+
+Suite: **1003 passed** (3:22 on the laptop), ruff clean, re-run by the
+coordinating session rather than taken from the subagent's report.
+
+**GitHub is not a usable remote yet.** An `origin` now exists
+(`git@github.com:lucascosolo/nomad-handheld.git`) but it holds no refs and a
+repository rule declines the push — `remote rejected ... due to repository
+rule violations`. `git ship` cannot work against it either, since it fetches
+`origin/main` and finds nothing. Deployment therefore still goes over the `pi`
+remote, exactly as before. Whoever added the GitHub repo needs to relax the
+ruleset (or push an initial `main`) before the normal branch-and-ship flow
+works here.
+
 ### 2026-08-09 (late) — a finger can answer
 
 **A tap on an option now answers the question.** The prompt has been drawable
@@ -421,7 +503,7 @@ them. More files meant more places for the contract to drift.
 | U | **Daily utilities:** timers, alarms, stopwatch, notes, world clock, unit conversion — real broker-gated tools, all answerable offline | `src/nomad/utilities/**`, `src/nomad/mcp/utilities.py`, `tests/test_utilities_core.py` | `pytest tests/test_utilities_core.py` | **DONE** |
 | S | **Skills (D39):** progressive disclosure — a name and one line stay in context, the body loads on demand; token-efficient by construction | `src/nomad/skills/**`, `src/nomad/mcp/skills.py`, `tests/test_skills.py` | `pytest tests/test_skills.py` | **DONE** (D39) |
 | O | **Offline tier + tool evolution:** a deterministic on-device intent router that answers common asks without a round trip, and an evidence-driven path proposing promotions the operator approves | `src/nomad/offline/**`, `src/nomad/mcp/offline.py`, `tests/test_offline.py` | `pytest tests/test_offline.py` | **DONE** |
-| P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), `AgentSession.impulse()`, trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/{test_triggers,test_agent_session}.py` | TODO |
+| P | **Proactivity:** turn provenance (`user`/`timer`/`sensor`/`self`), trigger layer, foreground/background lanes | `src/nomad/triggers/**`, `src/nomad/core/turns.py`, `src/nomad/agent/session.py`, `tests/test_triggers.py` | `pytest tests/test_triggers.py` | **PARTIAL** 2026-08-09 — provenance and `SelfImproveTrigger` done and wired; sensor/timer triggers and the foreground/background lanes are not |
 | I | **Self-upgrade (D25, D26, D29):** app registry + manifest + **out-of-process** supervisor; settings service with validation, audit, revert | `src/nomad/apps/**`, `src/nomad/settings/**`, `tests/test_apps.py`, `tests/test_settings.py` | `pytest tests/{test_apps,test_settings}.py` | TODO |
 | F3 | Remaining wire-up: HTTP API, README, full layering sweep | `src/nomad/api/**`, `README.md`, `tests/test_api.py`, `tests/test_layering.py` | full `pytest` | TODO |
 | H | Delivery (D22, D23): `scripts/setup.sh`, systemd unit, self-update with rollback | `scripts/**`, `src/nomad/selfupdate/**`, `tests/test_selfupdate.py` | `pytest tests/test_selfupdate.py`, shellcheck | TODO |

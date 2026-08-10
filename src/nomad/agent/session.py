@@ -45,6 +45,7 @@ from nomad.core.errors import AgentError
 from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.core.logging import get_logger
+from nomad.core.turns import TurnSource
 from nomad.mcp.server import McpToolRouter, build_hardware_tools, register_hardware_tools
 from nomad.memory.briefing import compose_briefing
 from nomad.memory.rollover import should_roll
@@ -111,6 +112,11 @@ class TurnOutcome(BaseModel):
 
     turn_id: str
     status: TurnOutcomeStatus
+    #: Carried here rather than looked up, so `agent.turn_finished` — the only
+    #: event a view should treat as final — says who asked for the turn it is
+    #: closing. A view that had to query the row to find out would be a view
+    #: that never bothers.
+    source: TurnSource = TurnSource.USER
     text: str = ""
     tool_calls: list[str] = Field(default_factory=list)
     input_tokens: int = 0
@@ -306,6 +312,22 @@ class AgentSession:
         return self._current_turn_id
 
     @property
+    def busy(self) -> bool:
+        """Whether a turn holds the session right now.
+
+        Reads the turn lock and not `current_turn_id`, because the two are not
+        the same fact: `send()` takes the lock *before* `_run_turn` writes the
+        turn row, so there is a window in which a turn is unquestionably in
+        flight and `current_turn_id` is still `None`.
+
+        That distinction is the whole reason this property exists. Anything
+        that starts a turn nobody asked for has to be able to see a live turn
+        and stand down — `send()` would otherwise queue silently behind the
+        operator and surface minutes later as a reply to nothing they said.
+        """
+        return self._turn_lock.locked()
+
+    @property
     def last_resume_report(self) -> ResumeReport | None:
         """What boot recovery did, for a view that reconnects and asks."""
         return self._resume_report
@@ -385,6 +407,11 @@ class AgentSession:
         optimistic replay that runs a tool twice.
         """
         report = ResumeReport(expired_authorizations=await self._queue.expire_all(self.session_id))
+        #: Provenance has to survive the recovery that re-drives a turn, or a
+        #: power cut would quietly relabel the device's own work as the
+        #: operator's. Collected on the pass below rather than re-read later,
+        #: which would be a second query for a fact already in hand.
+        sources: dict[str, TurnSource] = {}
 
         for turn in await self._conversations.find_incomplete_turns():
             if turn.session_id != self.session_id:
@@ -399,6 +426,7 @@ class AgentSession:
                 report.aborted.append(turn.id)
                 continue
             report.resumed.append(turn.id)
+            sources[turn.id] = turn.source
 
         await self._bus.publish(
             Event(
@@ -428,7 +456,10 @@ class AgentSession:
                 if prompt is None:  # pragma: no cover - filtered above
                     continue
                 await self._conversations.update_turn_status(turn_id, "aborted")
-                await self.send(str(prompt.content.get("text", "")))
+                await self.send(
+                    str(prompt.content.get("text", "")),
+                    source=sources.get(turn_id, TurnSource.USER),
+                )
         return report
 
     # -- memory ------------------------------------------------------------
@@ -503,17 +534,27 @@ class AgentSession:
 
     # -- conversation ------------------------------------------------------
 
-    async def send(self, text: str) -> TurnOutcome:
-        """Run one turn. Serialized: one turn at a time per session."""
+    async def send(self, text: str, *, source: TurnSource = TurnSource.USER) -> TurnOutcome:
+        """Run one turn. Serialized: one turn at a time per session.
+
+        `source` defaults to `USER` because that is what every caller that
+        predates it meant, and because a caller that forgets it should be
+        wrong in the direction of "a person asked for this" rather than
+        silently attributing an operator's words to the device.
+
+        Note the serialization: a caller that is *not* a person must check
+        `busy` first and skip, because waiting on this lock means running
+        whenever the operator happens to stop typing.
+        """
         async with self._turn_lock:
-            task = asyncio.ensure_future(self._run_turn(text))
+            task = asyncio.ensure_future(self._run_turn(text, source))
             self._current_turn_task = task
             try:
                 return await task
             finally:
                 self._current_turn_task = None
 
-    async def _run_turn(self, text: str) -> TurnOutcome:
+    async def _run_turn(self, text: str, source: TurnSource = TurnSource.USER) -> TurnOutcome:
         """Drive one turn through the backend and record what happened.
 
         The backend owns the loop (D19), so this is not a turn *loop* — it is
@@ -536,7 +577,9 @@ class AgentSession:
         await self._maybe_roll_backend()
         self._backend_turns += 1
 
-        turn = await self._conversations.create_turn(session_id=self.session_id, status="running")
+        turn = await self._conversations.create_turn(
+            session_id=self.session_id, status="running", source=source
+        )
         self._current_turn_id = turn.id
         await self._conversations.add_message(
             turn_id=turn.id, session_id=self.session_id, role="user", content={"text": text}
@@ -546,11 +589,20 @@ class AgentSession:
             Event(
                 type=EVENT_TURN_STARTED,
                 source="agent_session",
-                payload={"session_id": self.session_id, "turn_id": turn.id, "text": text},
+                payload={
+                    "session_id": self.session_id,
+                    "turn_id": turn.id,
+                    "text": text,
+                    # An added key, never a renamed event. `resources/governor.py`
+                    # matches these two events by *name* as text and
+                    # `tests/test_resources.py` pins that, which is exactly why
+                    # provenance travels in the payload.
+                    "source": str(source),
+                },
             )
         )
 
-        outcome = TurnOutcome(turn_id=turn.id, status=TurnOutcomeStatus.COMPLETED)
+        outcome = TurnOutcome(turn_id=turn.id, status=TurnOutcomeStatus.COMPLETED, source=source)
         try:
             await self._backend.send(text, session_id=self.session_id)
             await self._consume(turn.id, outcome)

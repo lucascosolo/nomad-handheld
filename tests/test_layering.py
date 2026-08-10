@@ -45,6 +45,7 @@ EVERYTHING = {
     "utilities",
     "skills",
     "offline",
+    "triggers",
 }
 
 #: Which sibling packages each package may import. Deliberately tight: this is
@@ -114,6 +115,23 @@ ALLOWED: dict[str, set[str]] = {
         "offline",
     },
     "agent": {"core", "storage", "targets", "tools", "memory", "mcp"},
+    # Chunk P. A trigger begins a turn nobody asked for, so it sits *above*
+    # `agent` and drives the session; the session knows nothing about triggers
+    # and must not, or "what started this turn" would become a question the
+    # loop answers by looking upwards.
+    #
+    # Two edges, and the second one is the interesting omission. `core` carries
+    # `TurnSource`, which lives there precisely so `agent` can stamp a turn
+    # with its provenance without importing this package. `agent` is the
+    # session itself.
+    #
+    # **Not `status`, and not `hardware`.** Readiness — "could a turn actually
+    # run" — is already probed by `nomad.status`, which is a composition-root
+    # module: importing it here would point an edge back up at the root and
+    # close a cycle through `app`. So the probe arrives as an injected
+    # callable, which is the same shape `view` gets `submit` and `set_mode` in.
+    # A battery read would have to arrive the same way if one is ever wanted.
+    "triggers": {"core", "agent"},
     # Views onto the session (D11). They render the agent's event vocabulary
     # and hold the `DisplayDriver` protocol; they own no state.
     #
