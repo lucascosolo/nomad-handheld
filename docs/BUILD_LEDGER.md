@@ -1154,3 +1154,47 @@ Deliberately deferred, not forgotten, and not scheduled above.
   manual flash step, not a Pi-driven protocol message.
 - **Encryption at rest** for SQLite (D7). Turn history, tool results and grants
   are plaintext on the Pi's storage.
+
+### 2026-08-09 (night, last) — what a wake button will cost
+
+**Not built. Recorded so the next session does not re-derive it**, because the
+two facts below are both surprising and both change the design.
+
+The operator asked for a way to start a turn on demand — "if he's idle I
+should have a button to tap to wake him up". Two findings:
+
+1. **The joystick and physical buttons are not wired on this device.**
+   `input/actions.py` says so in the `PUSH_TO_TALK` comment. So a wake control
+   cannot be a button mapping, however natural that reads: touch is the only
+   live input. Anything phrased as "map a button to WAKE" is dead on arrival.
+
+2. **The tappable round trip already exists and needs no firmware change.**
+   `ScreenKind.CHOICE` draws options and the panel reports which was tapped
+   (`input.choice`), which is how authorization prompts are answered. An idle
+   screen drawn as a one-option choice — "Wake" — reuses all of it.
+
+The blocking design question is contention, not plumbing: `InputChoicePrompter`
+owns the choice channel for authorizations, so an idle affordance must not be
+able to eat a pending prompt's answer, and `ScreenOwner` (D36) arbitrates
+writers rather than input. That is the part to think about before typing.
+
+The capability underneath both surfaces is `SelfImproveTrigger.fire_now()`.
+Two things learned while writing it and then reverting it:
+
+- It must **start** the turn, not await it. `send()` returns when the turn
+  *ends* — minutes — so a button or an HTTP handler that awaits it is a hung
+  UI. Hold a strong reference to the task and retrieve its exception in a done
+  callback, or asyncio reports the failure at collection time, far from the
+  cause.
+- It should **not** spend the failure budget. `max_consecutive_failures` is a
+  brake on an unattended loop failing into a wall; a person tapping a button
+  is the opposite of unattended, and a stopped loop should still answer a
+  hand. The cap silences the timer, not the operator.
+
+Also worth knowing, since it was asked and is not obvious: **the D42 mode
+selector is on the browser view, not the panel.** A CLI or a panel widget
+would write the database rather than the running session's in-memory mode.
+
+Suite at this point: 1020 passed, ruff clean, `main` on GitHub for the first
+time (push protection was blocking a *fake* Slack token in chunk M's history,
+allowlisted by the operator — never a real credential).
