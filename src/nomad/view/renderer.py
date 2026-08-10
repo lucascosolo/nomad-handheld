@@ -53,6 +53,20 @@ DEFAULT_MAX_CHARS = 600
 _WORKING = "…"
 _THINKING_TITLE = "Thinking"
 
+#: What the glass says when no turn is running. Drawn once at startup, and it
+#: matters more than its size suggests: a panel holds the last pixels it was
+#: sent until it is sent different ones, and nothing here used to send any at
+#: boot. So a restart left the previous turn's final frame on the screen —
+#: after a crash, a frame from a turn that no longer existed, indefinitely.
+#: `PanelKeeper` could not heal it either, because it repaints the last write
+#: and there had not been one.
+#:
+#: A screen that is merely blank is honest. A screen mid-sentence about work
+#: that died an hour ago is not, and NOMAD.md's one-second test fails worst
+#: exactly when the device has just come back from something going wrong.
+_IDLE_TEXT = "idle"
+_IDLE_TITLE = "Nomad"
+
 #: How much of a tool's own argument reaches the glass. Long enough for a real
 #: command or a path to be recognisable, short enough that it cannot push the
 #: title off a screen that does not scroll.
@@ -154,7 +168,21 @@ class TurnRenderer:
     async def start(self) -> None:
         self._state = ComponentState.STARTING
         self._unsubscribe = self._bus.subscribe(AGENT_EVENT_PATTERN, self.handle)
+        await self._draw_idle()
         self._state = ComponentState.STARTED
+
+    async def _draw_idle(self) -> None:
+        """Claim the screen at boot so it cannot keep a dead turn's frame.
+
+        Failure is swallowed. A display that is not answering yet must not
+        stop the renderer from subscribing — the subscription is the thing
+        that makes every later frame possible, and `PanelKeeper` will repaint
+        on its next tick anyway.
+        """
+        try:
+            await self._display.show_text(_IDLE_TEXT, title=_IDLE_TITLE)
+        except Exception:  # noqa: BLE001 - a screen must never block startup
+            logger.warning("Could not draw the idle screen at startup", exc_info=True)
 
     async def stop(self) -> None:
         self._state = ComponentState.STOPPING

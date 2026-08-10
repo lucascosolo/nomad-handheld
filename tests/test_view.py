@@ -554,3 +554,63 @@ async def test_a_new_turn_clears_the_previous_call_detail(
     )
     await renderer.handle(_started())
     assert "pytest" not in screen.screen.text
+
+
+# -- never stale across a restart --------------------------------------------
+
+
+async def test_startup_claims_the_screen_so_a_dead_turn_cannot_stay_on_it(
+    renderer: TurnRenderer, screen: HeadlessDisplay
+) -> None:
+    """The failure this fixes, reproduced as the panel actually experiences it.
+
+    A panel holds the last pixels it was sent. So the previous process's final
+    frame is simulated by writing it directly, then starting a *new* renderer
+    against the same screen — which is exactly what a service restart does.
+    """
+    await screen.show_text("Now, let's set up a venv", title="Claude")
+    assert "venv" in screen.screen.text
+
+    await renderer.start()
+
+    assert "venv" not in screen.screen.text
+    assert "idle" in screen.screen.text
+
+
+async def test_the_idle_screen_is_drawn_even_with_no_turn_history(
+    renderer: TurnRenderer, screen: HeadlessDisplay
+) -> None:
+    assert screen.screen.text == ""
+    await renderer.start()
+    assert screen.screen.text != ""
+    assert renderer.active_turn_id is None
+
+
+async def test_a_display_that_fails_at_boot_does_not_stop_the_subscription(
+    event_bus: EventBus,
+) -> None:
+    """A screen is never allowed to prevent the renderer from subscribing.
+
+    If it did, one bad frame at boot would cost every frame afterwards — the
+    opposite of the property this component exists for.
+    """
+
+    class FailsOnce:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.text = ""
+
+        async def show_text(self, text: str, *, title: str | None = None) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("panel not answering yet")
+            self.text = text
+
+    display = FailsOnce()
+    renderer = TurnRenderer(display, bus=event_bus)  # type: ignore[arg-type]
+
+    await renderer.start()
+    assert renderer.state is ComponentState.STARTED
+
+    await renderer.handle(_started())
+    assert display.text != ""
