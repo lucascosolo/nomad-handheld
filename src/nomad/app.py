@@ -51,6 +51,8 @@ from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.events import EventBus
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
+from nomad.hardware.fanout import DisplayFanout
+from nomad.hardware.panel_keeper import PANEL_SURFACE, PanelKeeper
 from nomad.hardware.selection import create_battery_driver, create_display_stack
 from nomad.input.choice import (
     ExternalChoicePrompter,
@@ -229,6 +231,7 @@ class NomadApp:
         # wakeup forever on a laptop build.
         self.esp32_link = self._build_esp32_link()
         self.display = create_display_stack(config.display, link=self.esp32_link)
+        self.panel_keeper = self._build_panel_keeper()
         self.battery = create_battery_driver(config.battery)
         # Output only, and that is not an omission. D37 gives the device a
         # `speak` tool and deliberately no `listen` tool at any price, so the
@@ -454,6 +457,35 @@ class NomadApp:
         link = Link(transport, kind=LinkKind.DISPLAY, name="esp32")
         link.on_reboot(self._redraw_after_reboot)
         return link
+
+    def _build_panel_keeper(self) -> PanelKeeper | None:
+        """Repaint the panel on a tick, when there is a panel to repaint.
+
+        `_redraw_after_reboot` below covers the reset it can *see* — `seq`
+        going backwards. It cannot see the first one: on a fresh connect both
+        sides are at zero, so the reset that opening the port causes is
+        invisible to reboot detection, and the fixed settle-delay redraw that
+        was written for it is a guess about timing that was wrong on the glass.
+        A tick needs no guess and covers the knocked cable and the brownout
+        too, which reboot detection also misses when the Pi's write lands in
+        the window before the panel is listening again.
+
+        Requires a `DisplayFanout`, because `repaint` is the fanout's replay of
+        its own last write and there is nothing else that remembers what was
+        drawn. With `mirror = []` the stack is the bare driver, so a
+        single-surface panel gets no keeper — worth knowing before wondering
+        why the tick is absent.
+        """
+        if self._config.display.repaint_interval_s <= 0:
+            return None
+        if not isinstance(self.display, DisplayFanout):
+            return None
+        if self.display.surface(PANEL_SURFACE) is None:
+            return None
+        return PanelKeeper(
+            self.display,
+            interval_s=self._config.display.repaint_interval_s,
+        )
 
     async def _redraw_after_reboot(self, event: object) -> None:
         """Put something back on the glass after the panel restarts.
@@ -718,6 +750,14 @@ class NomadApp:
             # is cancelled *after* the session has closed its turns, which is
             # the order that leaves nothing half-written.
             components.append(self.governor)
+        if self.panel_keeper is not None:
+            # Last of the display chain and late in the list generally: it
+            # replays whatever the fanout drew most recently, so starting it
+            # before anything has drawn simply means its first few ticks are
+            # no-ops. Stopping in reverse order retires it before the link it
+            # writes through goes down, which is what keeps shutdown from
+            # logging a repaint failure on the way out.
+            components.append(self.panel_keeper)
         components.append(self.session)
         return components
 

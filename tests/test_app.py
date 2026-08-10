@@ -265,6 +265,36 @@ async def test_mirroring_writes_to_every_surface(tmp_path: Path) -> None:
     assert "status" in str(headless.screen.html)
 
 
+async def test_a_panel_gets_a_keeper_and_it_is_a_started_component(tmp_path: Path) -> None:
+    """The keeper was written, tested and — like six subsystems before it —
+    would have been inert until the composition root built one. This asserts
+    the join, not the behaviour."""
+    app = NomadApp(_config(tmp_path, display={"driver": "esp32", "mirror": ["headless"]}))
+    assert app.panel_keeper is not None
+    await app.start()
+    try:
+        assert app.states()["panel_keeper"] is ComponentState.STARTED
+    finally:
+        await app.stop()
+    assert app.states()["panel_keeper"] is ComponentState.STOPPED
+
+
+async def test_a_device_with_no_panel_has_no_keeper(tmp_path: Path) -> None:
+    """Nothing to repair on an in-process surface that cannot miss a write."""
+    app = NomadApp(_config(tmp_path, display={"driver": "headless"}))
+    assert app.panel_keeper is None
+
+
+async def test_the_repaint_tick_can_be_switched_off(tmp_path: Path) -> None:
+    app = NomadApp(
+        _config(
+            tmp_path,
+            display={"driver": "esp32", "mirror": ["headless"], "repaint_interval_s": 0},
+        )
+    )
+    assert app.panel_keeper is None
+
+
 async def test_a_surface_cannot_be_listed_twice(tmp_path: Path) -> None:
     """Two surfaces of one kind double every write, and for `esp32` would mean
     two drivers on one link."""

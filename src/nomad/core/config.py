@@ -322,6 +322,12 @@ class DisplayConfig(BaseModel):
     mirror: list[str] = Field(default_factory=list)
     width: int = 320
     height: int = 240
+    #: How often the panel is told again what it should already be showing, in
+    #: seconds. `0` disables it. The panel is a stateless renderer, so a frame
+    #: lost to a reset or a knocked cable leaves the glass permanently wrong
+    #: with every layer above reporting success; repainting on a tick bounds
+    #: that to one interval. See `hardware/panel_keeper.py`.
+    repaint_interval_s: float = 2.0
 
     @model_validator(mode="after")
     def _no_duplicate_surfaces(self) -> DisplayConfig:

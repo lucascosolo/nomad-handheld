@@ -211,6 +211,12 @@ height = 240
 # blacking out the others. A kind may not appear twice, and with `mirror` empty
 # the primary driver is used directly with no fanout at all. (D36)
 mirror = []              # e.g. ["headless"] alongside driver = "esp32"
+# The panel draws the last state it was sent and then holds that picture
+# forever, so a frame lost to a reset or a knocked cable leaves the glass
+# lying while every layer above reports success. Nomad repaints the current
+# screen on this tick so that heals itself; the firmware skips re-rendering an
+# identical payload, so an unchanged screen costs no flicker. 0 disables it.
+repaint_interval_s = 2.0
 
 [audio]
 recorder_driver = "mock"       # mock | alsa

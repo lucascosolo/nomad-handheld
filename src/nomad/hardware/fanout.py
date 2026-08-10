@@ -76,6 +76,12 @@ class DisplayFanout:
             raise HardwareError("a display fanout needs at least one surface")
         self._surfaces = surfaces
         self.stats = FanoutStats()
+        #: The most recent write, kept so a surface that missed it can be
+        #: brought back into agreement without the caller re-deciding what to
+        #: draw. See `PanelKeeper`: the panel is a stateless renderer on the
+        #: end of a cable, and a frame it never received leaves it wrong
+        #: forever with every layer reporting success.
+        self._last: Callable[[object], Awaitable[None]] | None = None
 
     @property
     def surfaces(self) -> list[Surface]:
@@ -98,6 +104,21 @@ class DisplayFanout:
             if surface.name == name:
                 return surface.driver
         return None
+
+    async def repaint(self, name: str) -> bool:
+        """Send the current screen to one surface again. `False` if there is
+        nothing drawn yet, or no such surface.
+
+        Deliberately not a full `_fan`: repainting every surface would count
+        as a write, reset failure counters and, on a screen that is already
+        correct, do work for nothing. This exists for the one surface that can
+        silently fall behind.
+        """
+        driver = self.surface(name)
+        if driver is None or self._last is None:
+            return False
+        await self._last(driver)
+        return True
 
     def describe(self) -> str:
         parts = [f"{s.name}{'' if s.healthy else ' (failing)'}" for s in self._surfaces]
@@ -129,6 +150,7 @@ class DisplayFanout:
         the slowest cable set the frame rate for the fastest screen.
         """
         self.stats.writes += 1
+        self._last = call
         results = await asyncio.gather(
             *(call(surface.driver) for surface in self._surfaces),
             return_exceptions=True,

@@ -31,7 +31,7 @@
 #include "framing.h"
 #include "panel.h"
 
-static const char *kFirmwareVersion = "nomad-face 0.2.0";
+static const char *kFirmwareVersion = "nomad-face 0.3.0";
 
 static nomad::NomadDisplay display;
 static nomad::Framing framing;
@@ -168,6 +168,17 @@ static int drawChrome(const char *title) {
   display.setFont(&fonts::Font2);
   display.setTextColor(kAccent, kBackground);
   display.drawString(title && title[0] ? title : "Nomad", 8, 6);
+
+  // The build, on every screen and not only the waiting one. Reading the glass
+  // is the only way to tell whether a flash actually took — the upload can
+  // report success, the board can come back on the old image, and every other
+  // symptom of that looks exactly like a firmware bug in the new one.
+  display.setTextDatum(top_right);
+  display.setFont(&fonts::Font0);
+  display.setTextColor(kMuted, kBackground);
+  display.drawString(kFirmwareVersion, display.width() - 8, 10);
+  display.setTextDatum(top_left);
+  display.setFont(&fonts::Font2);
 
   display.drawFastHLine(0, 26, display.width(), kRule);
   return 34;  // first free y
@@ -364,6 +375,27 @@ static void renderChoice(JsonObjectConst payload) {
   }
 }
 
+// FNV-1a over the raw frame body. The Pi repaints the current screen on a
+// tick so that a frame lost to a reset or a knocked cable heals itself
+// (`panel_keeper.py`), and every one of those repaints is a picture already on
+// the glass. Re-rendering it would strobe the display several times a second
+// for nothing, so an identical payload is acknowledged and dropped.
+//
+// A hash rather than a stored copy: the largest `display.state` is a few KB
+// and this part is holding a frame buffer already. A collision would skip one
+// redraw and the next tick fixes it, which is a far better failure than
+// running out of RAM.
+static uint32_t lastRenderHash = 0;
+
+static uint32_t hashBody(const uint8_t *body, size_t length) {
+  uint32_t hash = 2166136261u;
+  for (size_t i = 0; i < length; i++) {
+    hash ^= body[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
+
 static void renderState(JsonObjectConst payload) {
   const char *kind = payload["kind"] | "text";
 
@@ -422,6 +454,17 @@ static void handleFrame(const uint8_t *body, size_t length) {
   JsonObjectConst payload = message["payload"];
 
   if (strcmp(type, "display.state") == 0) {
+    // Hash the *payload as received*, not the envelope: `seq` and `id` change
+    // on every frame, so hashing the whole body would defeat the check
+    // entirely and the screen would strobe on every tick.
+    char rendered[3072];
+    const size_t used = serializeJson(payload, rendered, sizeof(rendered));
+    const uint32_t hash = used > 0 ? hashBody((const uint8_t *)rendered, used) : 0;
+    if (used > 0 && hash == lastRenderHash) {
+      framesRendered++;   // it *was* accepted; it just needed no pixels
+      return;
+    }
+    lastRenderHash = hash;
     renderState(payload);
   } else if (strcmp(type, "display.backlight") == 0) {
     const bool on = payload["on"] | true;
