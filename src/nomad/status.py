@@ -168,6 +168,14 @@ async def _probe_claude_cli(cli: ClaudeCliConfig) -> BackendHealth:
 
     version = await _cli_version(resolved)
     auth = _auth_source(cli)
+    # A credentials file on disk is not a working credential. The device
+    # reported `auth: cli-credentials` and `ready` while the CLI answered
+    # `loggedIn: false` and every turn failed with "OAuth session expired" —
+    # the exact shape of failure this probe exists to catch, produced by the
+    # probe itself. So ask the CLI rather than the filesystem when there is a
+    # CLI to ask.
+    if auth == "cli-credentials" and await _cli_logged_in(resolved) is False:
+        auth = "expired"
     if version is None:
         return BackendHealth(
             backend="claude_cli",
@@ -182,11 +190,15 @@ async def _probe_claude_cli(cli: ClaudeCliConfig) -> BackendHealth:
         # works, and refusing to start over a version string would make the
         # device brittle against an upgrade nobody asked for (D20).
         notes.append(f"expected {cli.expected_cli_version}")
-    if auth == "none":
-        notes.append(f"not logged in; run `claude` and /login, or set {cli.oauth_token_env}")
+    if auth in ("none", "expired"):
+        notes.append(
+            "credentials on disk have expired; re-run `claude auth login` on the device"
+            if auth == "expired"
+            else f"not logged in; run `claude` and /login, or set {cli.oauth_token_env}"
+        )
     return BackendHealth(
         backend="claude_cli",
-        ready=auth != "none",
+        ready=auth not in ("none", "expired"),
         detail="; ".join(notes),
         version=version,
         auth=auth,
@@ -205,11 +217,40 @@ def _sdk_installed() -> bool:
     return importlib.util.find_spec("claude_agent_sdk") is not None
 
 
+async def _cli_logged_in(path: str) -> bool | None:
+    """Ask the CLI whether its credential still works. `None` if it cannot say.
+
+    `None` and `False` are deliberately different. Not being able to ask —
+    an old CLI without the subcommand, a timeout — is not evidence of being
+    logged out, and downgrading the report on it would make a slow device look
+    unauthenticated. Only an explicit `loggedIn: false` counts.
+    """
+    output = await _run_cli(path, "auth", "status")
+    if output is None:
+        return None
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    value = parsed.get("loggedIn") if isinstance(parsed, dict) else None
+    return bool(value) if isinstance(value, bool) else None
+
+
 async def _cli_version(path: str) -> str | None:
+    return await _run_cli(path, "--version")
+
+
+async def _run_cli(path: str, *args: str) -> str | None:
+    """One short read-only CLI call. `None` for anything that is not an answer.
+
+    Bounded by the same timeout as the version probe, because this runs on the
+    boot path and on `nomad status`: a CLI that hangs must cost a few seconds
+    and an unknown, never the screen coming up.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             path,
-            "--version",
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

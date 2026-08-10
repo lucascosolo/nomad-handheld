@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+import nomad.status
 from nomad.app import NomadApp
 from nomad.cli import build_parser, cmd_status
 from nomad.core.config import NomadConfig
@@ -297,3 +298,56 @@ async def test_status_exits_non_zero_when_the_backend_cannot_answer(
 
     assert code == 1
     assert "NOT READY" in capsys.readouterr().out
+
+
+# -- a credential that exists and does not work -----------------------------
+
+
+def _answer(value: object):
+    """A stand-in for one of the CLI probes: ignores its arguments, answers."""
+
+    async def probe(*_args: object, **_kwargs: object) -> object:
+        return value
+
+    return probe
+
+
+async def test_an_expired_credential_is_not_reported_as_authenticated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found the same way as everything else in this file: by running it.
+
+    The Pi reported `auth: cli-credentials` and `ready` while `claude auth
+    status` answered `loggedIn: false` and every turn came back "OAuth session
+    expired and could not be refreshed". The file was there; the credential was
+    dead. A probe that reads the filesystem cannot tell those apart, so it asks
+    the CLI whenever there is a CLI to ask.
+    """
+    monkeypatch.setattr(nomad.status, "_auth_source", lambda _cli: "cli-credentials")
+    monkeypatch.setattr(nomad.status, "_cli_version", _answer("2.1.226 (Claude Code)"))
+    monkeypatch.setattr(nomad.status, "_cli_logged_in", _answer(False))
+    monkeypatch.setattr(nomad.status.shutil, "which", lambda _path: "/usr/bin/claude")
+
+    health = await probe_backend(_config(tmp_path, agent={"backend": "claude_cli"}))
+
+    assert health.auth == "expired"
+    assert health.ready is False
+    assert "expired" in health.detail
+
+
+async def test_a_cli_that_cannot_answer_is_not_called_logged_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`None` is not `False`. An old CLI without the subcommand, or one that
+    times out on a busy device, is a device that could not be asked — and
+    downgrading the report on that would make every slow boot look
+    unauthenticated."""
+    monkeypatch.setattr(nomad.status, "_auth_source", lambda _cli: "cli-credentials")
+    monkeypatch.setattr(nomad.status, "_cli_version", _answer("2.1.226 (Claude Code)"))
+    monkeypatch.setattr(nomad.status, "_cli_logged_in", _answer(None))
+    monkeypatch.setattr(nomad.status.shutil, "which", lambda _path: "/usr/bin/claude")
+
+    health = await probe_backend(_config(tmp_path, agent={"backend": "claude_cli"}))
+
+    assert health.auth == "cli-credentials"
+    assert health.ready is True
