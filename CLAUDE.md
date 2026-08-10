@@ -89,6 +89,12 @@ and `nice` anything heavy. Never run two heavy commands at once.
   policy line, not a hard wall.** Say that plainly rather than implying a
   sandbox that isn't there. A resolved-path check still beats a prompt
   instruction wherever a path is resolved at all. (D15, D21)
+- **`[workspace].scratch_root` is the one place writes outside the workspace
+  may be auto-approved** — because D22 puts self-modification there and a path
+  that needs a human per call is not a path an unattended loop can walk. The
+  source-tree test runs *first* and returns, so a scratch root overlapping
+  Nomad's own code cannot make it writable; a config that overlaps is refused
+  at startup. Empty by default. Nothing else about `never_auto` moved. (D43)
 - `ANTHROPIC_API_KEY` is stripped from the backend's child environment. If it
   leaks through, the CLI bills per token instead of the subscription. Never
   `--bare` — it never reads OAuth. (D20)

@@ -243,6 +243,48 @@ class OfflineConfig(BaseModel):
 class WorkspaceConfig(BaseModel):
     root: str = "var/workspace"
     follow_symlinks_outside_root: bool = False
+    #: Where self-modification is allowed to happen unattended (D43).
+    #:
+    #: D22 says Nomad changes himself in a scratch worktree rather than in the
+    #: tree he is running from — and D14's rule that writes outside
+    #: `root` are `never_auto` made that path unwalkable without a human
+    #: answering a prompt per call. Naming the scratch root here is what
+    #: reconciles them: writes and exec under it may be auto-approved, and
+    #: nothing else changes.
+    #:
+    #: Empty by default, and that is the fail-closed posture the rest of this
+    #: file uses — like `allowed_network_hosts` and `allowed_commands`, the
+    #: capability exists and a device only has it once its operator has
+    #: written the path down.
+    scratch_root: str = ""
+
+    @model_validator(mode="after")
+    def _scratch_root_cannot_reach_the_source_tree(self) -> WorkspaceConfig:
+        """A scratch root overlapping Nomad's own source is refused at load.
+
+        This is the failure that would quietly undo D21: point the scratch
+        root at the running tree and every write to Nomad's own code becomes
+        auto-approvable, with no other symptom. `compute_scope` checks the
+        source tree first and would classify the overlap as `source_tree`
+        anyway — so this is the second independent line of defence, not the
+        only one, which is the shape D21 asks for.
+
+        A *parent* is rejected as well as a child: `scratch_root = "/"` is not
+        a clever way to say "anywhere".
+        """
+        if not self.scratch_root:
+            return self
+        from nomad.core.paths import nomad_source_root
+
+        scratch = Path(self.scratch_root).expanduser().resolve()
+        source = nomad_source_root()
+        if scratch == source or scratch in source.parents or source in scratch.parents:
+            raise ValueError(
+                f"[workspace].scratch_root ({scratch}) overlaps Nomad's own source tree "
+                f"({source}). Self-modification happens in a worktree beside the source, "
+                "never inside it (D21, D22, D43)."
+            )
+        return self
 
 
 class ToolsConfig(BaseModel):

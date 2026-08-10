@@ -1327,6 +1327,77 @@ glass gets the same selector when a tap can choose an option.
 
 ---
 
+## D43 — a declared scratch root, because D22 was not walkable
+
+**Decided:** `[workspace].scratch_root` names one directory where writes and
+execution may be auto-approved. Paths under it get a new grant scope,
+`scratch`, sitting between `workspace` and `outside` in strictness. Empty by
+default.
+
+**The problem, and it was a contradiction between two decisions rather than a
+bug in either.** D22 says Nomad modifies himself in a scratch worktree, never
+in the tree he is running from. D14 says writes outside `[workspace].root` are
+`never_auto`, and D21 says `never_auto` beats the mode in every mode. Both are
+right, and together they made D22's path impossible to walk: every `Write`
+into the worktree, and `git worktree add` itself, resolved to `never_auto`.
+
+With a human present that is a prompt. With nobody present — which is the
+entire premise of the self-improvement trigger — it is a prompt nobody
+answers. The observed symptom was a self-directed turn sitting for ten minutes
+with an empty scratch directory and no error anywhere, which is the worst
+shape a failure can take on this device: everything reports success and
+nothing has happened.
+
+Reading was blocked too, and that was the less obvious half. The read-only
+auto-allow covered `workspace`, `none` and `source_tree` but not `outside`, so
+Nomad could not even read the worktree he had just been told to create.
+
+**Why a declared root rather than the alternatives.**
+
+- *Widening `[workspace].root` to cover the scratch area* was rejected because
+  `root` is the confinement every filesystem tool resolves against (D15). One
+  key cannot mean both "where ordinary work is confined" and "where
+  self-modification is allowed" without the first losing its meaning.
+- *Relaxing the `outside` rule generally* was rejected outright: that is the
+  rule, not an obstacle to it.
+- *Letting Nomad nominate the path at runtime* was rejected for the reason
+  `nomad_source_root()` is computed from `__file__` and not from config — a
+  boundary the subject can move is not a boundary.
+
+**What keeps it bounded, and each of these is tested rather than asserted:**
+
+- **The source-tree test runs first and returns immediately.** A path that is
+  in both the scratch root and Nomad's own tree resolves to `source_tree`, so
+  it stays `never_auto`. The writable scope cannot be reached by nesting.
+- **A scratch root overlapping the source tree is refused at config load** —
+  as a child, as a parent, or as the same path. A device configured that way
+  does not start. This is deliberately a second, independent line of defence
+  and not the only one.
+- **Nothing else moved.** SSH, HID, `DESTRUCTIVE` and the network host rule
+  are evaluated before any of this, exactly as before. `scratch` widens
+  precisely one rule: writes and exec outside the workspace root.
+- **Empty by default.** Like D31's host list and D41's command list, the
+  capability exists and a device only has it once its operator has written the
+  path down.
+- **The strictest scope a call touches still wins.** A call naming one scratch
+  path and one genuinely outside path is `outside`, not `scratch`.
+
+**D41's command list grew, and three of the new entries write.** `git worktree
+add`, `python3 -m venv` and an editable `pip install` are what *build* the tree
+the suite runs in. The list's own comment used to say nothing on it writes;
+that is no longer true and the comment now says so, because a false claim in a
+security-relevant file is worse than the widening it conceals. Narrowness comes
+from prefix matching: `pip install -e . --no-deps` does not permit
+`pip install requests`. The venv uses `--system-site-packages` and the install
+`--no-deps`, so no wheel is fetched and no egress is granted to build it.
+
+*Cost to change:* Low to revert — remove the scope and the config key and the
+device returns to refusing unattended self-modification. Higher to get wrong,
+which is why the source-tree ordering is pinned by a test that was watched
+failing before it was trusted.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

@@ -163,6 +163,18 @@ audit_history = 100
 # Filesystem tools are confined to this root. (D15)
 root = "var/workspace"
 follow_symlinks_outside_root = false
+# Where self-modification may happen unattended (D43). D22 says Nomad changes
+# himself in a scratch worktree rather than in the tree he is running from,
+# and D14 makes every write outside `root` never_auto — so without this the
+# path D22 mandates could not be walked without a human answering a prompt per
+# call, and the self-improvement loop stalled on a prompt nobody was there to
+# answer. Naming the root here makes writes and exec under it auto-approvable
+# and changes nothing else: Nomad's own source tree stays never_auto, and a
+# value overlapping it is refused at startup rather than quietly obeyed.
+#
+# Empty by default, like every other capability on this device that costs
+# something. Set it per-device in nomad.local.toml.
+scratch_root = ""        # e.g. "~/nomad-scratch"
 
 [tools]
 # Hosts an outbound request may reach without asking, in any mode (D31).
@@ -177,12 +189,26 @@ command_timeout_seconds = 120
 # that begins with `git`. Any shell metacharacter disqualifies the command, so
 # `pytest; rm -rf ~` matches nothing here.
 #
-# This list is exactly the verification set D22 makes load-bearing: the suite
-# is the gate on self-modification, so Nomad has to be able to run it without
-# a human answering a prompt per command. Everything on it is read-only or
-# reports a result; nothing on it writes, publishes, or reaches another host —
-# and an entry that somehow did would still be blocked, because SSH, HID,
-# DESTRUCTIVE and network rules all run before this list is consulted.
+# This list is the verification set D22 makes load-bearing — the suite is the
+# gate on self-modification, so Nomad has to run it without a human answering
+# a prompt per command — plus, since D43, the few commands that *build* the
+# scratch worktree the gate runs in.
+#
+# **Three of these write, and saying so is the point.** `git worktree add`
+# creates a tree, `python3 -m venv` creates a directory, and the editable
+# install writes into that venv. They earn their place because the alternative
+# is a self-improvement path that cannot be walked unattended — which is not a
+# safer device, it is one that proposes unverified changes. What keeps them
+# narrow is that each is a *token prefix*: `pip install -e . --no-deps` does
+# not permit `pip install requests`, so this cannot become a way to fetch
+# arbitrary packages. Nothing here publishes or reaches another host, and an
+# entry that somehow did would still be blocked, because SSH, HID, DESTRUCTIVE
+# and network rules all run before this list is consulted.
+#
+# The venv is built with --system-site-packages and the install with
+# --no-deps, so no wheel is ever downloaded: the worktree gets its own
+# *editable* install pointing at its own `src`, which is the load-bearing
+# property, without the network being involved at all.
 allowed_commands = [
   "pytest",
   "ruff check",
@@ -193,6 +219,13 @@ allowed_commands = [
   "git show",
   "git branch",
   "git worktree list",
+  # D43 — building and verifying a scratch worktree.
+  "cd",
+  "git worktree add",
+  "python3 -m venv",
+  "./.venv/bin/pip install -e . --no-deps",
+  "./.venv/bin/python -m pytest",
+  "./.venv/bin/ruff check",
 ]
 
 # NOTE: the old [ai] section is gone. Model selection is now backend selection

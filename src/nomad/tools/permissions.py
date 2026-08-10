@@ -32,7 +32,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -43,6 +42,7 @@ from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.errors import NomadError, PermissionDenied, TargetError, ToolError
 from nomad.core.events import Event, EventBus
 from nomad.core.logging import get_logger
+from nomad.core.paths import nomad_source_root
 from nomad.storage.repositories.grants import (
     GrantRecord,
     GrantsRepository,
@@ -73,6 +73,13 @@ SCOPE_HID = "hid"
 #: Nomad's own running source tree (D21). Distinguished from `outside` because
 #: it is the one region a write must never reach, however the mode is set.
 SCOPE_SOURCE_TREE = "source_tree"
+
+#: A path under the operator's declared scratch root (D43). Between
+#: `workspace` and `outside` in strictness: writes and exec here may be
+#: auto-approved, which `outside` never allows, because this is where D22
+#: says self-modification happens and a path that cannot be walked
+#: unattended is a self-improvement loop that cannot run.
+SCOPE_SCRATCH = "scratch"
 #: Outbound network, keyed by host: `net:example.com` (D31). Per-host, so an
 #: approved fetch of one site is not a grant to reach every site.
 SCOPE_NETWORK_PREFIX = "net:"
@@ -268,22 +275,24 @@ Classifier = Callable[[ToolRequest, ToolSpec], Awaitable[Classification]]
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=1)
-def nomad_source_root() -> Path:
-    """Where Nomad's own running source lives (D21).
+def scratch_root(config: NomadConfig) -> Path | None:
+    """The declared scratch root (D43), resolved, or `None` when unset.
 
-    Resolved from this module's location rather than from config, because a
-    config value could be edited to point the rule somewhere harmless — and
-    the whole purpose of the rule is that the running tree cannot exempt
-    itself. If the package sits in a git checkout with a `pyproject.toml` the
-    repo root is returned, so `tests/`, `nomad.toml` and `scripts/` are
-    protected too; otherwise the installed package directory is the boundary.
+    Unset is the shipped default and means "no such scope exists" — the
+    permission rules then behave exactly as they did before D43. This is the
+    same fail-closed posture as `allowed_network_hosts` and D41's command
+    list: the capability is real, and a device only has it once its operator
+    has written the path down.
+
+    Deliberately *not* validated here. `WorkspaceConfig` refuses a scratch
+    root that overlaps Nomad's own source tree at load time, so a device with
+    a dangerous value never starts; re-checking on every call would suggest
+    this is the guard, and it is not.
     """
-    package = Path(__file__).resolve().parent.parent
-    repo_root = package.parent.parent
-    if (repo_root / "pyproject.toml").is_file() and (repo_root / ".git").exists():
-        return repo_root
-    return package
+    raw = config.workspace.scratch_root
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
 
 
 def _resolve_unconfined(raw: str, workspace: Workspace) -> Path | None:
@@ -326,7 +335,11 @@ def _network_scope(spec: ToolSpec, params: dict[str, Any]) -> str:
 
 
 def compute_scope(
-    spec: ToolSpec, target: Target, params: dict[str, Any], workspace: Workspace
+    spec: ToolSpec,
+    target: Target,
+    params: dict[str, Any],
+    workspace: Workspace,
+    scratch: Path | None = None,
 ) -> str:  # noqa: C901 - one branch per scope kind reads better than a dispatch table
     """Derive the grant scope for one call (D14).
 
@@ -361,12 +374,14 @@ def compute_scope(
     if not spec.path_params:
         return SCOPE_NONE
 
-    # Every path param is examined before settling, because `source_tree` is
-    # stricter than `outside` and must win when a call touches both. Returning
-    # on the first rejected path would let a second, source-tree path hide
-    # behind it.
+    # Every path param is examined before settling, because the scopes are
+    # ordered by strictness — `source_tree` beats `outside` beats `scratch`
+    # beats `workspace` — and the strictest one a call touches must win.
+    # Returning on the first escaped path would let a second, stricter path
+    # hide behind it.
     source_root = nomad_source_root()
-    escaped = False
+    escaped_outside = False
+    escaped_scratch = False
     for name in spec.path_params:
         value = params.get(name)
         if value is None:
@@ -374,14 +389,28 @@ def compute_scope(
         try:
             workspace.resolve(str(value))
         except PermissionDenied:
-            escaped = True
             resolved = _resolve_unconfined(str(value), workspace)
             if resolved is None or resolved == source_root or resolved.is_relative_to(source_root):
                 # `None` means the path would not normalise at all; treat an
                 # uninterpretable path as the most restricted scope, never the
                 # least. Fail closed.
+                #
+                # This test runs *before* the scratch test and returns
+                # immediately, which is what makes a scratch root that somehow
+                # overlaps the source tree harmless: the overlap resolves to
+                # `source_tree`, never to the writable scope. `WorkspaceConfig`
+                # already refuses that configuration at load; this is the
+                # second, independent line of defence D21 asks every rule for.
                 return SCOPE_SOURCE_TREE
-    return SCOPE_OUTSIDE if escaped else SCOPE_WORKSPACE
+            if scratch is not None and (resolved == scratch or resolved.is_relative_to(scratch)):
+                escaped_scratch = True
+            else:
+                escaped_outside = True
+    if escaped_outside:
+        return SCOPE_OUTSIDE
+    if escaped_scratch:
+        return SCOPE_SCRATCH
+    return SCOPE_WORKSPACE
 
 
 def _host_allowed(scope: str, allowed_hosts: frozenset[str]) -> bool:
@@ -461,7 +490,7 @@ def never_auto_reason(
         )
     if (
         spec.permissions & ESCALATING_PERMISSIONS
-        and scope != SCOPE_WORKSPACE
+        and scope not in (SCOPE_WORKSPACE, SCOPE_SCRATCH)
         and not command_allowed
     ):
         return f"writes or exec outside the workspace root (scope={scope})"
@@ -570,7 +599,9 @@ class PermissionBroker:
                 spec=spec,
             )
 
-        scope = compute_scope(spec, target, request.params, self._workspace)
+        scope = compute_scope(
+            spec, target, request.params, self._workspace, scratch_root(self._config)
+        )
 
         # --- hard workspace boundary (D15) ---------------------------------
         if spec.workspace_confined and scope == SCOPE_OUTSIDE:
@@ -682,7 +713,7 @@ class PermissionBroker:
         if (
             spec.risk is Risk.READ_ONLY
             and Permission.NETWORK not in spec.permissions
-            and scope in (SCOPE_WORKSPACE, SCOPE_NONE, SCOPE_SOURCE_TREE)
+            and scope in (SCOPE_WORKSPACE, SCOPE_NONE, SCOPE_SOURCE_TREE, SCOPE_SCRATCH)
         ):
             return await self._finalize(
                 request,
@@ -1286,7 +1317,9 @@ class ToolExecutor:
                     {"grant_id": grant.id, "tool": request.tool, "target": request.target_id},
                 )
 
-        scope = compute_scope(spec, target, request.params, self._workspace)
+        scope = compute_scope(
+            spec, target, request.params, self._workspace, scratch_root(self._config)
+        )
         if scope != grant.scope:
             raise PermissionDenied(
                 "Grant does not authorize this call: scope changed since it was granted",

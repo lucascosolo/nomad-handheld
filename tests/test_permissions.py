@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.errors import PermissionDenied
 from nomad.core.events import Event, EventBus
+from nomad.core.paths import nomad_source_root
 from nomad.storage.db import Database
 from nomad.storage.repositories.conversations import ConversationsRepository
 from nomad.storage.repositories.events import EventsRepository
@@ -27,6 +28,8 @@ from nomad.tools.builtin import build_default_registry
 from nomad.tools.permissions import (
     SCOPE_NONE,
     SCOPE_OUTSIDE,
+    SCOPE_SCRATCH,
+    SCOPE_SOURCE_TREE,
     SCOPE_WORKSPACE,
     AuthorizationGrant,
     AuthorizationQueue,
@@ -38,6 +41,7 @@ from nomad.tools.permissions import (
     Resolution,
     ToolExecutor,
     ToolRequest,
+    compute_scope,
     never_auto_reason,
 )
 from nomad.tools.registry import ToolRegistry
@@ -1108,3 +1112,89 @@ async def test_an_empty_policy_leaves_the_shell_exactly_as_it_was(
 
     assert decision.outcome is DecisionOutcome.NEEDS_AUTH
     assert decision.never_auto is True
+
+
+# -- D43: the scratch root ---------------------------------------------------
+#
+# D22 says self-modification happens in a scratch worktree; D14 made every
+# write outside the workspace `never_auto`. Together those made D22's path
+# unwalkable with nobody watching, and the observed failure was a self-directed
+# turn stalling for ten minutes on a prompt no one was there to answer.
+#
+# The rule that makes the widening safe is the ORDER: the source-tree test runs
+# first and returns immediately, so a scratch root that overlaps Nomad's own
+# tree cannot make it writable. `test_a_scratch_path_inside_the_source_tree_is_
+# still_source_tree` is that rule, and it was watched failing before it was
+# trusted — the source-tree branch was removed and it went red.
+
+
+def _scratch_case(tmp_path: Path, path: str, scratch: Path | None) -> str:
+    return compute_scope(
+        ProbeWriteTool.spec,
+        LocalTarget(),
+        {"path": path},
+        Workspace(tmp_path / "workspace"),
+        scratch,
+    )
+
+
+def test_without_a_declared_scratch_root_nothing_changes(tmp_path: Path) -> None:
+    """The shipped default. D43 must be inert until an operator opts in."""
+    scope = _scratch_case(tmp_path, str(tmp_path / "elsewhere" / "x.py"), None)
+    assert scope == SCOPE_OUTSIDE
+    assert never_auto_reason(ProbeWriteTool.spec, LocalTarget(), scope) is not None
+
+
+def test_a_path_under_the_scratch_root_is_writable_unattended(tmp_path: Path) -> None:
+    """The whole point: D22's worktree can now be built with nobody watching."""
+    scratch = tmp_path / "scratch"
+    scope = _scratch_case(tmp_path, str(scratch / "try" / "src" / "x.py"), scratch)
+    assert scope == SCOPE_SCRATCH
+    assert never_auto_reason(ProbeWriteTool.spec, LocalTarget(), scope) is None
+
+
+def test_a_scratch_path_inside_the_source_tree_is_still_source_tree(tmp_path: Path) -> None:
+    """The load-bearing ordering. If a scratch root could contain Nomad's own
+    code, D43 would silently repeal D21 — so the source-tree test runs first
+    and returns before the scratch test is ever reached."""
+    source = nomad_source_root()
+    scope = _scratch_case(tmp_path, str(source / "src" / "nomad" / "app.py"), source.parent)
+    assert scope == SCOPE_SOURCE_TREE
+    assert never_auto_reason(ProbeWriteTool.spec, LocalTarget(), scope) is not None
+
+
+def test_the_strictest_scope_still_wins_across_several_paths(tmp_path: Path) -> None:
+    """A call naming a scratch path *and* a genuinely outside one is `outside`.
+    Returning on the first escaped path would let the stricter one hide."""
+
+    class TwoPaths:
+        spec = ProbeWriteTool.spec.model_copy(update={"path_params": ("path", "other")})
+
+    scratch = tmp_path / "scratch"
+    scope = compute_scope(
+        TwoPaths.spec,
+        LocalTarget(),
+        {"path": str(scratch / "ok.py"), "other": str(tmp_path / "elsewhere" / "no.py")},
+        Workspace(tmp_path / "workspace"),
+        scratch,
+    )
+    assert scope == SCOPE_OUTSIDE
+
+
+def test_the_scratch_root_does_not_unlock_ssh_hid_or_destructive(tmp_path: Path) -> None:
+    """D43 widens exactly one rule. These are evaluated before it and stay put."""
+    scratch = tmp_path / "scratch"
+    ssh = SshTarget(alias="ws", host="10.0.0.5", user="lucas")
+    assert never_auto_reason(ProbeWriteTool.spec, ssh, SCOPE_SCRATCH) is not None
+    assert never_auto_reason(ProbeWriteTool.spec, HidTarget(), SCOPE_SCRATCH) is not None
+    assert never_auto_reason(DestroyTool.spec, LocalTarget(), SCOPE_SCRATCH) is not None
+    # And the ordinary case is still permitted, so the assertions above are
+    # about those rules rather than about the scope being rejected outright.
+    assert _scratch_case(tmp_path, str(scratch / "x.py"), scratch) == SCOPE_SCRATCH
+
+
+def test_an_unresolvable_path_under_scratch_still_fails_closed(tmp_path: Path) -> None:
+    """Fail closed survives the widening: an uninterpretable path gets the most
+    restricted scope, never the newly permissive one."""
+    scope = _scratch_case(tmp_path, "\x00not-a-path", tmp_path / "scratch")
+    assert scope == SCOPE_SOURCE_TREE

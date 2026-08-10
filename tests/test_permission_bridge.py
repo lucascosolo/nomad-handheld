@@ -629,10 +629,26 @@ async def test_the_shipped_config_is_the_one_that_was_reviewed(
         "git show",
         "git branch",
         "git worktree list",
+        # D43 — building and verifying a scratch worktree. Three of these
+        # write, which is a change from the original list and is the reason
+        # this test had to be edited by hand rather than adjusted to pass.
+        "cd",
+        "git worktree add",
+        "python3 -m venv",
+        "./.venv/bin/pip install -e . --no-deps",
+        "./.venv/bin/python -m pytest",
+        "./.venv/bin/ruff check",
     ]
-    # Every one of them is read-only or reports a result. None writes,
-    # publishes, or reaches another host.
+    # None publishes, reaches another host, rewrites history, or destroys
+    # anything. `git worktree add` creates; `git worktree remove` is absent and
+    # must stay absent.
     assert not any(
-        entry.startswith(("git push", "git commit", "git reset", "ssh", "scp", "curl"))
+        entry.startswith(
+            ("git push", "git commit", "git reset", "git worktree remove", "ssh", "scp", "curl")
+        )
         for entry in shipped
     )
+    # The install entry carries `--no-deps` as part of the declared prefix, so
+    # it cannot be widened into a way to fetch arbitrary packages without
+    # editing this list — which means editing this test.
+    assert all("pip install" not in e or e.endswith("--no-deps") for e in shipped)

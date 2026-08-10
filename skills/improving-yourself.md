@@ -12,10 +12,24 @@ nobody can reach a keyboard.
 1. **Work in a scratch worktree, never in `~/nomad-handheld`.**
 
    ```
-   git -C ~/nomad-handheld worktree add ~/nomad-scratch/<short-name> -b <short-name>
-   cd ~/nomad-scratch/<short-name>
-   python3 -m venv .venv && ./.venv/bin/pip install -q -e ".[dev,agent]"
+   cd /home/nomad/nomad-handheld
+   git worktree add /home/nomad/nomad-scratch/<short-name> -b <short-name>
+   cd /home/nomad/nomad-scratch/<short-name>
+   python3 -m venv --system-site-packages .venv
+   ./.venv/bin/pip install -e . --no-deps
    ```
+
+   **Type them exactly in that shape, one command per call.** These are the
+   forms the operator declared in `[tools].allowed_commands` (D41), matched as
+   token prefixes, so they run without a prompt. A rearrangement does not:
+   `cd x && y` contains `&&` and any shell metacharacter disqualifies the
+   whole string, `git -C <path> worktree add` does not start with the declared
+   tokens, and `pip install -e ".[dev,agent]"` can never be approved at all
+   because `[` is a disqualifying character. That is why the install is
+   `--no-deps` over a `--system-site-packages` venv: the dependencies are
+   already present in the parent environment, nothing is downloaded, and the
+   worktree still gets its own *editable* install pointing at its own `src`,
+   which is the only property that matters.
 
    Writes inside your running source tree are `never_auto` in every mode, so
    an attempt to edit it will simply be denied — correctly, and with no way to

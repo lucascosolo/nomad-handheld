@@ -9,6 +9,88 @@ been run and its output read.** After a context compaction, trust this file and
 
 Read this first after a compaction.
 
+### 2026-08-09 (night, later) — the loop could start but not work (D43)
+
+**Both things the first self-directed turn exposed are fixed.**
+
+**1. The mid-turn screen said nothing.** `_draw_partial` drew the literal
+string `"…"` under `Running Bash` and held it for minutes. Not a crash, no log
+line, nothing to grep — the operator simply looked at the glass and could not
+tell whether Nomad was working or wedged, which is the exact promise NOMAD.md
+makes and the exact one it broke. The renderer now pulls the tool's own
+argument out of `tool_input` — the command for `Bash`, the path for a file
+tool, the pattern for a search — collapses whitespace so a heredoc cannot eat
+the screen, and truncates. `tool_input` was on the event the whole time and
+nothing read it.
+
+It is defensive about that payload on purpose: it arrives as JSON off the bus,
+so a non-dict or a non-string value returns `""` rather than raising. A
+renderer is the last place in the system that should throw — a blank screen is
+a worse failure than a missing detail line.
+
+**2. Nomad could not actually follow `improving-yourself`, and that was two
+decisions contradicting rather than a bug in either.** D22 says
+self-modification happens in a scratch worktree outside the running tree. D14
+says writes outside `[workspace].root` are `never_auto`, and D21 says
+`never_auto` beats the mode in every mode. Both right; together they made
+D22's path unwalkable. Reproduced before changing anything:
+
+```
+Write /home/nomad/nomad-scratch/try/src/x.py   -> scope 'outside' -> never_auto
+Bash  git worktree add /home/nomad/nomad-scratch/try -> never_auto
+```
+
+With a human present that is a prompt. With nobody present it is a prompt
+nobody answers — which is precisely what the ten-minute stall was.
+
+**Reading was blocked too**, and that half was easier to miss: the read-only
+auto-allow covered `workspace`, `none` and `source_tree` but not `outside`, so
+Nomad could not read the worktree he had just been told to create.
+
+**D43 is the fix**: a declared `[workspace].scratch_root`, a new `scratch`
+grant scope between `workspace` and `outside`, empty by default. Four things
+keep it bounded, and the first is the one that matters:
+
+1. **The source-tree test runs first and returns immediately**, so a scratch
+   root that overlaps Nomad's own tree cannot make it writable. **Verified by
+   injecting the bypass and watching it fail** — with the early return removed
+   the test reports `assert 'scratch' == 'source_tree'`, which is the whole
+   rule in one line. A security test never run red is not known to work.
+2. A scratch root overlapping the source tree is **refused at config load**,
+   as child, parent or equal. Second independent line of defence, not the only
+   one.
+3. SSH, HID, `DESTRUCTIVE` and the network host rule are untouched and still
+   evaluated first. Asserted, not assumed.
+4. The strictest scope a call touches still wins: one scratch path plus one
+   genuinely outside path is `outside`.
+
+**D41's command list grew by six, and three of them write.** The list's own
+comment claimed nothing on it writes; that is no longer true and the comment
+now says so, because a false claim in a security-relevant file is worse than
+the widening it hides. Narrowness comes from prefix matching, checked rather
+than assumed:
+
+```
+git worktree add ...            allowed        pip install requests     refused
+python3 -m venv ...             allowed        git worktree remove ...  refused
+./.venv/bin/pip install -e . --no-deps  allowed   git push origin main  refused
+                                               pytest; rm -rf ~         refused
+```
+
+**The skill's own recipe could never have been approved** and had to change:
+`pip install -e ".[dev,agent]"` contains `[`, which is a disqualifying
+metacharacter, so no allowlist entry could ever match it. It is now a
+`--system-site-packages` venv plus `pip install -e . --no-deps` — no wheel is
+downloaded, no egress is granted, and the worktree still gets its own
+*editable* install pointing at its own `src`, which is the only property that
+made the separate venv load-bearing in the first place. The skill now also
+says to type the commands in exactly that shape and why, since `cd x && y`
+contains `&&` and matches nothing.
+
+`nomad_source_root()` moved to `nomad.core.paths` — config validation and the
+permission rule both need it, and `core` is the only layer both may import.
+`tools.permissions` re-exports it.
+
 ### 2026-08-09 (night) — the glass heals itself, and Nomad can start a turn
 
 **The panel is verified working, by the operator's eyes, and the bug it
