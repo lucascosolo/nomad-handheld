@@ -221,3 +221,95 @@ async def test_the_idle_handler_can_be_wired_after_construction() -> None:
 async def test_stop_is_safe_before_start() -> None:
     stream = InputStream(InputMapper(InputConfig()))
     await InputBroker(stream).stop()
+
+
+# -- D47: answering the panel's question from a browser --------------------
+
+
+async def test_the_browser_can_answer_the_question_on_the_panel() -> None:
+    """The operator reads the prompt on a phone and taps Approve. Before this,
+    the page rendered the question and could not resolve it."""
+    broker, stream = await _wired(Collector())
+    prompter = InputChoicePrompter(broker, show=Recorder(), default_timeout_s=2.0)
+    try:
+        asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Deny", "Approve"]))
+        await _settle(lambda: prompter.pending is not None)
+        pending = prompter.pending
+        assert pending is not None
+        assert await prompter.answer(pending.token, 1)
+        result = await asking
+        assert result.outcome is ChoiceOutcome.ANSWERED
+        assert result.option == "Approve"
+    finally:
+        await broker.stop()
+        await stream.stop()
+
+
+async def test_a_stale_click_cannot_answer_the_question_that_replaced_it() -> None:
+    """The reason this does not go through `feed_choice`. Every authorization
+    prompt draws the same three labels, so an index and a label alone cannot
+    tell this question from the one the page was showing a moment ago."""
+    broker, stream = await _wired(Collector())
+    prompter = InputChoicePrompter(broker, show=Recorder(), default_timeout_s=2.0)
+    try:
+        first = asyncio.ensure_future(prompter.ask("Run rm -rf /?", ["Deny", "Approve"]))
+        await _settle(lambda: prompter.pending is not None)
+        stale = prompter.pending
+        assert stale is not None
+        await _press(stream, ButtonId.B)  # BACK — the operator denied it
+        assert (await first).outcome is ChoiceOutcome.CANCELLED
+
+        second = asyncio.ensure_future(prompter.ask("Send email?", ["Deny", "Approve"]))
+        await _settle(lambda: prompter.pending is not None)
+        fresh = prompter.pending
+        assert fresh is not None and fresh.token != stale.token
+        # The click the operator made on the *previous* page.
+        assert not await prompter.answer(stale.token, 1)
+
+        await _press(stream, ButtonId.B)
+        assert (await second).outcome is ChoiceOutcome.CANCELLED
+    finally:
+        await broker.stop()
+        await stream.stop()
+
+
+async def test_dismissing_from_the_browser_cancels_which_denies() -> None:
+    broker, stream = await _wired(Collector())
+    prompter = InputChoicePrompter(broker, show=Recorder(), default_timeout_s=2.0)
+    try:
+        asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Deny", "Approve"]))
+        await _settle(lambda: prompter.pending is not None)
+        pending = prompter.pending
+        assert pending is not None
+        assert await prompter.cancel(pending.token)
+        assert (await asking).outcome is ChoiceOutcome.CANCELLED
+    finally:
+        await broker.stop()
+        await stream.stop()
+
+
+async def test_answering_when_no_question_is_up_is_false_not_an_error() -> None:
+    broker, stream = await _wired(Collector())
+    prompter = InputChoicePrompter(broker, show=Recorder(), default_timeout_s=2.0)
+    try:
+        assert prompter.pending is None
+        assert not await prompter.answer("whatever", 0)
+        assert not await prompter.cancel("whatever")
+    finally:
+        await broker.stop()
+        await stream.stop()
+
+
+async def test_an_index_off_the_end_answers_nothing() -> None:
+    broker, stream = await _wired(Collector())
+    prompter = InputChoicePrompter(broker, show=Recorder(), default_timeout_s=0.5)
+    try:
+        asking = asyncio.ensure_future(prompter.ask("Deploy?", ["Deny", "Approve"]))
+        await _settle(lambda: prompter.pending is not None)
+        pending = prompter.pending
+        assert pending is not None
+        assert not await prompter.answer(pending.token, 7)
+        assert (await asking).outcome is ChoiceOutcome.TIMED_OUT
+    finally:
+        await broker.stop()
+        await stream.stop()

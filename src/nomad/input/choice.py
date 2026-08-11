@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -32,7 +33,7 @@ from enum import StrEnum
 from nomad.core.logging import get_logger
 from nomad.input.actions import ACTION_BACK, ACTION_CONFIRM, ACTION_NAV_DOWN, ACTION_NAV_UP
 from nomad.input.broker import InputBroker
-from nomad.input.events import ActionPhase, ChoiceSelection, InputAction
+from nomad.input.events import ActionPhase, ChoiceSelection, InputAction, InputSource
 
 logger = get_logger(__name__)
 
@@ -278,6 +279,60 @@ class InputChoicePrompter:
         self._broker = broker
         self._show = show
         self._default_timeout_s = default_timeout_s
+        #: The question on the glass right now, as an immutable snapshot, or
+        #: `None` between questions. Read from the HTTP thread — rebound as a
+        #: whole and never mutated, so a reader sees one question or the next
+        #: and never half of one. This is what lets the browser view show the
+        #: *panel's* prompt as real buttons (D47).
+        self._pending: PendingQuestion | None = None
+
+    @property
+    def pending(self) -> PendingQuestion | None:
+        """The unanswered question, for a second surface to render."""
+        return self._pending
+
+    async def answer(self, token: str, index: int) -> bool:
+        """Answer the live question from somewhere that is not the panel.
+
+        The token is the whole safety property. Every authorization prompt
+        draws the same three labels, so an index and a label alone cannot tell
+        an answer to *this* question from a click on a page that was still
+        showing the last one — and on an authorization prompt that is the
+        difference between approving what the operator read and approving what
+        replaced it. A token is minted per question and never reused.
+
+        `False` means the click did not resolve anything: the question has been
+        answered already, or the page was stale. It is not an error, and it is
+        deliberately not distinguished from one to the caller — a browser that
+        could tell "wrong token" from "no question" learns the shape of what it
+        is guessing at.
+        """
+        pending = self._pending
+        if pending is None or not secrets.compare_digest(token, pending.token):
+            return False
+        if not 0 <= index < len(pending.options):
+            return False
+        return self._broker.offer(
+            ChoiceSelection(index=index, option=pending.options[index], ts=time.time())
+        )
+
+    async def cancel(self, token: str) -> bool:
+        """Dismiss the live question, which for an authorization is a denial.
+
+        Sent as `BACK` rather than as an option, because that is what the
+        physical control does and there is one path through `_run` for both.
+        """
+        pending = self._pending
+        if pending is None or not secrets.compare_digest(token, pending.token):
+            return False
+        return self._broker.offer(
+            InputAction(
+                action=ACTION_BACK,
+                phase=ActionPhase.PRESS,
+                ts=time.time(),
+                source=InputSource.BUTTON,
+            )
+        )
 
     async def ask(
         self, question: str, options: list[str], *, timeout_s: float | None = None
@@ -324,6 +379,17 @@ class InputChoicePrompter:
         highlighted = 0
         await self._show(question, options, highlighted)
 
+        # Published before the borrow and cleared in `finally`, so the window
+        # in which a second surface can answer is exactly the window in which
+        # an answer can be delivered. A token published without a borrower
+        # would be a click that silently does nothing.
+        self._pending = PendingQuestion.create(question, options)
+        try:
+            return await self._read(question, options, highlighted)
+        finally:
+            self._pending = None
+
+    async def _read(self, question: str, options: list[str], highlighted: int) -> ChoiceResult:
         async with self._broker.borrow() as events:
             async for event in events:
                 if isinstance(event, ChoiceSelection):

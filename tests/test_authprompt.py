@@ -617,3 +617,99 @@ async def test_a_parked_tool_call_is_resolved_by_the_prompt(tmp_path: Path) -> N
     assert grant is None
     assert "write_file" in app.display.screen.text  # type: ignore[attr-defined]
     assert app.authprompt.prompts_shown == 1
+
+
+# -- D46: a turn nobody asked for is a turn nobody is watching ---------------
+
+
+async def test_an_unattended_prompt_uses_the_shorter_wait(
+    screen: ScreenOwner, event_bus: EventBus
+) -> None:
+    """A minute is right for a person reading a command off the glass. It is a
+    minute of nothing when a timer started the turn at 3am."""
+    prompter = ScriptedPrompter(ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT))
+    component = AuthorizationPrompter(
+        bus=event_bus,
+        screen=screen,
+        prompter=prompter,
+        resolver=FakeResolver(),
+        timeout_s=60.0,
+        unattended=lambda: True,
+        unattended_timeout_s=10.0,
+    )
+    await component.handle(_pending_event())
+    assert [a[2] for a in prompter.asked] == [10.0]
+    assert component.unattended_prompts == 1
+
+
+async def test_an_operator_turn_still_gets_the_full_wait(
+    screen: ScreenOwner, event_bus: EventBus
+) -> None:
+    prompter = ScriptedPrompter(ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT))
+    component = AuthorizationPrompter(
+        bus=event_bus,
+        screen=screen,
+        prompter=prompter,
+        resolver=FakeResolver(),
+        timeout_s=60.0,
+        unattended=lambda: False,
+        unattended_timeout_s=10.0,
+    )
+    await component.handle(_pending_event())
+    assert [a[2] for a in prompter.asked] == [60.0]
+    assert component.unattended_prompts == 0
+
+
+async def test_zero_means_deny_without_drawing(screen: ScreenOwner, event_bus: EventBus) -> None:
+    """The configured refusal. The screen is never claimed: drawing a question
+    that will not be waited on takes the glass away from the turn the operator
+    can actually see, to show them something already decided."""
+    prompter = ScriptedPrompter(ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT))
+    resolver = FakeResolver()
+    component = AuthorizationPrompter(
+        bus=event_bus,
+        screen=screen,
+        prompter=prompter,
+        resolver=resolver,
+        unattended=lambda: True,
+        unattended_timeout_s=0.0,
+    )
+    await component.handle(_pending_event())
+    assert prompter.asked == []
+    assert component.prompts_shown == 0
+    assert resolver.denied and resolver.denied[0][0] == PENDING
+    assert screen.holder is None
+
+
+async def test_a_probe_that_raises_is_treated_as_attended(
+    screen: ScreenOwner, event_bus: EventBus
+) -> None:
+    """Fail toward the *longer* wait. The failure that matters here is cutting
+    short a question the operator wanted to answer, not waiting too long."""
+
+    def angry() -> bool:
+        raise RuntimeError("no")
+
+    prompter = ScriptedPrompter(ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT))
+    component = AuthorizationPrompter(
+        bus=event_bus,
+        screen=screen,
+        prompter=prompter,
+        resolver=FakeResolver(),
+        timeout_s=60.0,
+        unattended=angry,
+        unattended_timeout_s=1.0,
+    )
+    await component.handle(_pending_event())
+    assert [a[2] for a in prompter.asked] == [60.0]
+
+
+async def test_with_no_probe_wired_nothing_changes(
+    screen: ScreenOwner, event_bus: EventBus
+) -> None:
+    prompter = ScriptedPrompter(ChoiceResult(outcome=ChoiceOutcome.TIMED_OUT))
+    component = AuthorizationPrompter(
+        bus=event_bus, screen=screen, prompter=prompter, resolver=FakeResolver(), timeout_s=60.0
+    )
+    await component.handle(_pending_event())
+    assert [a[2] for a in prompter.asked] == [60.0]

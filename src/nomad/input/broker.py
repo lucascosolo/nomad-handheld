@@ -130,6 +130,32 @@ class InputBroker:
             with contextlib.suppress(asyncio.QueueFull):
                 queue.put_nowait(event)
 
+    def offer(self, event: InputEvent) -> bool:
+        """Hand an event to whoever holds the stream, from outside it.
+
+        This is how a *second surface* answers the question on the glass (D47).
+        The browser view is watching the same prompt the panel is showing, and
+        an operator reading it on a phone has to be able to answer it — but the
+        answer must not arrive as raw input, because two surfaces driving one
+        highlight is the failure `ExternalChoicePrompter` was written to avoid.
+
+        So it arrives here already resolved to an option, and only after the
+        borrower has checked that it answers *this* question — the token check
+        in `InputChoicePrompter.answer`. That check is what makes this safe and
+        a bare `feed_choice` unsafe: every authorization prompt draws the same
+        three labels, so a stale click on a page showing a question that has
+        gone would otherwise pass the label check and answer whatever replaced
+        it.
+
+        `False` means nobody was holding the stream, which is a click on a
+        question that has already been answered — never an error.
+        """
+        borrower = self._borrower
+        if borrower is None:
+            return False
+        self._offer(borrower, event)
+        return True
+
     @contextlib.asynccontextmanager
     async def borrow(self) -> AsyncIterator[AsyncIterator[InputEvent]]:
         """Take the stream for the length of one question.

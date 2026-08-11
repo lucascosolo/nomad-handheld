@@ -43,6 +43,7 @@ Two rules follow from drawing while holding model-supplied data:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -78,6 +79,18 @@ PROMPT_OPTIONS = [OPTION_DENY, OPTION_APPROVE, OPTION_APPROVE_SESSION]
 #: purpose: when nobody is looking, saying so and denying beats holding the
 #: turn open for five minutes to reach the same answer.
 DEFAULT_PROMPT_TIMEOUT_S = 60.0
+
+#: How long a prompt waits when the turn is one **nobody asked for** (D46).
+#: A minute is right when a person is holding the device and has to read the
+#: command; it is a minute of nothing when the turn was started by a timer at
+#: 3am. The device cannot know whether anyone is watching, but it does know
+#: who asked, and a self-directed turn is unattended by construction.
+#:
+#: Not zero by default, because the operator may well be watching an
+#: unattended turn — that is exactly what happens the first evening the
+#: schedule is switched on, and the browser view can answer from a phone.
+#: Zero is available and means "deny at once, do not draw".
+DEFAULT_UNATTENDED_PROMPT_TIMEOUT_S = 10.0
 
 #: Leaves the queue's timeout as the outer bound. If the pending record expires
 #: first, the queue denies and this prompt's answer would arrive too late.
@@ -228,12 +241,26 @@ class AuthorizationPrompter:
         prompter: ChoicePrompter,
         resolver: AuthorizationResolver,
         timeout_s: float = DEFAULT_PROMPT_TIMEOUT_S,
+        unattended: Callable[[], bool] | None = None,
+        unattended_timeout_s: float = DEFAULT_UNATTENDED_PROMPT_TIMEOUT_S,
     ) -> None:
         self._bus = bus
         self._screen = screen
         self._prompter = prompter
         self._resolver = resolver
         self._timeout_s = timeout_s
+        #: "Is the turn in flight one nobody asked for?" — injected, because
+        #: this component may not import `agent` and has no business knowing
+        #: what a turn is. `None` means the caller cannot tell, which is
+        #: treated as attended: the longer wait is the one that can still be
+        #: answered by a person, and guessing wrong in that direction costs a
+        #: minute rather than an approval the operator wanted to give.
+        self._unattended = unattended
+        self._unattended_timeout_s = max(0.0, unattended_timeout_s)
+        #: Prompts that were cut short, or refused outright, because nobody
+        #: had asked for the turn. Counted so "the loop is stalling on
+        #: permission" is a number rather than a hunch.
+        self.unattended_prompts = 0
         self._state = ComponentState.NEW
         self._unsubscribe: Unsubscribe | None = None
         self.prompts_shown = 0
@@ -271,6 +298,28 @@ class AuthorizationPrompter:
             logger.warning("Authorization event carried no pending id; not prompting")
             return
 
+        unattended = self._is_unattended()
+        if unattended:
+            self.unattended_prompts += 1
+        deadline = self._deadline(payload, unattended=unattended)
+        if unattended and deadline <= 0.0:
+            # Configured to refuse rather than ask when nobody asked for the
+            # turn. The screen is never claimed: drawing a question that will
+            # not be waited on would take the glass away from the turn the
+            # operator *can* see, to show them something already decided.
+            #
+            # Deliberately gated on `unattended` and not on the deadline
+            # alone. An *attended* prompt whose pending record has already
+            # expired still draws and still asks with a zero deadline — same
+            # denial, but the operator sees what was refused rather than
+            # watching the screen skip a question that was never posed.
+            logger.info(
+                "Denying without asking: nobody asked for this turn",
+                extra={"tool": field(payload.get("tool"))},
+            )
+            await self._resolver.deny(pending_id, "no operator: unattended turn")
+            return
+
         # Held for the whole exchange — question, answer *and* resolution —
         # rather than only while drawing. Releasing at the answer would let a
         # streamed chunk land on the screen in the window where the operator
@@ -281,7 +330,7 @@ class AuthorizationPrompter:
             result = await self._prompter.ask(
                 compose_question(payload),
                 list(PROMPT_OPTIONS),
-                timeout_s=self._deadline(payload),
+                timeout_s=deadline,
             )
             await self._resolve(pending_id, result, payload, view)
 
@@ -359,16 +408,39 @@ class AuthorizationPrompter:
             return False
         return True
 
-    def _deadline(self, payload: dict[str, Any]) -> float:
-        """Never outlive the pending record this prompt is asking about."""
+    def _is_unattended(self) -> bool:
+        """Did anybody ask for the turn this authorization belongs to?
+
+        A probe that raises answers *attended*, on the same principle as the
+        `None` case: the failure that matters here is cutting short a question
+        the operator wanted to answer, not waiting ten seconds too long.
+        """
+        if self._unattended is None:
+            return False
+        try:
+            return bool(self._unattended())
+        except Exception:  # noqa: BLE001 - an unanswerable probe is not a denial
+            logger.warning("Could not tell whether this turn was asked for", exc_info=True)
+            return False
+
+    def _deadline(self, payload: dict[str, Any], *, unattended: bool = False) -> float:
+        """How long to wait, bounded by the pending record's own expiry.
+
+        Two ceilings, and the smaller wins. `unattended` picks the shorter of
+        the two configured waits (D46); the record's `expires_at` is the outer
+        bound in both cases, because an answer that arrives after the queue has
+        already denied is worse than no answer — it reads to the operator as an
+        approval that did nothing.
+        """
+        ceiling = self._unattended_timeout_s if unattended else self._timeout_s
         raw = payload.get("expires_at")
         if not raw:
-            return self._timeout_s
+            return ceiling
         try:
             expires_at = datetime.fromisoformat(str(raw))
         except ValueError:
-            return self._timeout_s
+            return ceiling
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
         remaining = (expires_at - datetime.now(UTC)).total_seconds() - _EXPIRY_MARGIN_S
-        return max(0.0, min(self._timeout_s, remaining))
+        return max(0.0, min(ceiling, remaining))
