@@ -1138,6 +1138,54 @@ Ordered by dependency, not calendar. Deliberately no dates.
 | Camera / sensors | D9 driver pattern | `picamera2` driver, IMU/ToF as selected, with tools declared at appropriate risk — no special-casing capture in the broker |
 | `remote_llm` backend | D24 | A model on the tailnet. Note the asymmetry: it brings no loop, no tools, no compaction, so Nomad must supply all three — roughly what the retired `agent/loop.py` did |
 
+### 2026-08-10 — the wake button, and one Nomad per device (D44, D45)
+
+**Built and green: 1058 passed, ruff clean.** The operator can now start a turn
+by touching the screen, and a second instance can no longer start a second
+Claude session behind the first.
+
+**D44 — `InputBroker`, and the button.** The prompter used to *be* the single
+consumer of `InputStream.events()`, which meant nothing read the stream between
+questions — nearly all of the time on a handheld. Two consequences, and the
+second was a security bug rather than a missing feature:
+
+1. An idle affordance had nowhere to live, so a wake button could not exist.
+2. Idle presses did not vanish, they **queued**, and were delivered to the next
+   question as though answering it. `ChoiceSelection` was defended by label; a
+   bare `CONFIRM` was not. A borrow now starts empty, which closes it
+   structurally.
+
+The button itself is a one-option `choice` screen — the round trip the panel
+already implements, so no firmware change. It is drawn on every settled frame
+(boot, completed, interrupted, failed) because nothing redraws an ending, and
+*not* mid-turn because `fire_now()` refuses while the session is busy. It is
+drawn only when it would work: a self-improve trigger must exist and a panel
+must be able to report the tap. The boot status card becomes the same choice
+screen on a wake-enabled device — that frame can sit on the glass for hours,
+so it is exactly the one that has to be tappable.
+
+**D45 — `InstanceLock`.** An exclusive `flock` on `<data_dir>/nomad.lock`,
+first component up and last down. Two Nomads were always wrong; with the
+schedule on they are two unattended loops and two CLI sessions on one
+subscription. `flock` over a PID file because the kernel releases it on any
+exit — nothing to clean up after a power cut. In-process concurrency was
+already correct and unchanged: the session's turn lock serialises, the schedule
+skips rather than queues, `fire_now()` refuses.
+
+**NOMAD.md gained a `## The long horizon` section** — the distributed
+onboard/VPS architecture, and the standing push to replace repeated model calls
+with deterministic tools. It says plainly that this is not an instruction to
+imitate a person, and that emergence is never to be claimed without a
+demonstration. The file is now budgeted: `IDENTITY_WORD_BUDGET` (2400) and a
+parametrised test over the seven guardrail phrases, so trimming the prompt can
+never quietly trim a rule. It sits at ~2080 words.
+
+**Left for the next session:** the browser view has no wake control (D42's mode
+selector is there; this is not), so a headless build still cannot start a turn
+from the glass it renders. Deliberate — the button is the panel's affordance —
+but if the operator drives the device from a phone, it is the obvious next
+place for it.
+
 ## Known gaps
 
 Deliberately deferred, not forgotten, and not scheduled above.

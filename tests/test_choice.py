@@ -12,6 +12,7 @@ import asyncio
 import pytest
 
 from nomad.core.config import InputConfig
+from nomad.input.broker import InputBroker
 from nomad.input.choice import (
     ChoiceOutcome,
     InputChoicePrompter,
@@ -39,10 +40,19 @@ class Recorder:
 
 
 async def _prompter(timeout: float = 2.0) -> tuple[InputChoicePrompter, InputStream, Recorder]:
+    """The prompter, plus the stream to press into.
+
+    The broker in between is D44: the prompter borrows the stream for the
+    length of one question rather than owning it. The tests below press into
+    the stream exactly as they did before — the borrow is not something a
+    caller has to know about, which is the point of it.
+    """
     stream = InputStream(InputMapper(InputConfig()))
     await stream.start()
+    broker = InputBroker(stream)
+    await broker.start()
     show = Recorder()
-    return InputChoicePrompter(stream, show=show, default_timeout_s=timeout), stream, show
+    return InputChoicePrompter(broker, show=show, default_timeout_s=timeout), stream, show
 
 
 async def _press(stream: InputStream, button: ButtonId) -> None:

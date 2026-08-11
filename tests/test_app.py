@@ -23,6 +23,8 @@ from nomad.core.errors import LifecycleError
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import HeadlessDisplay
 from nomad.input.choice import ExternalChoicePrompter, NullChoicePrompter
+from nomad.input.wake import WAKE_LABEL
+from nomad.protocol.messages import InputChoice
 from nomad.storage.migrations import MIGRATIONS, current_version
 from nomad.view.authprompt import AUTH_PROMPT_WRITER
 
@@ -183,13 +185,30 @@ async def test_a_browser_view_is_an_input_device(tmp_path: Path) -> None:
     assert app.view is not None and app.view.writable
 
 
-async def test_exactly_one_consumer_owns_the_input_stream(tmp_path: Path) -> None:
-    """`InputStream.events()` is single-consumer: two readers steal presses."""
-    app = NomadApp(_config(tmp_path))
+@pytest.mark.parametrize(
+    "display",
+    [{"driver": "headless"}, {"driver": "esp32", "mirror": ["headless"]}],
+    ids=["headless", "panel"],
+)
+async def test_exactly_one_consumer_owns_the_input_stream(
+    tmp_path: Path, display: dict[str, object]
+) -> None:
+    """`InputStream.events()` is single-consumer: two readers steal presses.
+
+    Since D44 the consumer is the broker on every build, prompter or not —
+    which is stricter than what this test pinned before, because the reader no
+    longer comes and goes with whichever prompter the display driver selected.
+    """
+    app = NomadApp(_config(tmp_path, display=display))
     holders = [
-        name for name, value in vars(app).items() if getattr(value, "_stream", None) is app.input
+        name
+        for name, value in vars(app).items()
+        if getattr(value, "_stream", None) is app.input
+        # The router *feeds* the stream and never iterates it. Holding it is
+        # the opposite end of the pipe from consuming it.
+        and name != "input_router"
     ]
-    assert holders in ([], ["prompter"])
+    assert holders == ["input_broker"]
 
 
 async def test_the_screen_is_served_over_loopback(tmp_path: Path) -> None:
@@ -425,3 +444,69 @@ async def _settle(app: NomadApp) -> None:
         await asyncio.sleep(0.01)
         if app.renderer.active_turn_id is None and app.display.screen.text:  # type: ignore[attr-defined]
             return
+
+
+# -- the wake button (D44) --------------------------------------------------
+
+
+def _panel_with_trigger(tmp_path: Path) -> NomadConfig:
+    """A device shaped like the real one: its own glass, and a schedule."""
+    return _config(
+        tmp_path,
+        display={"driver": "esp32", "mirror": ["headless"]},
+        triggers={"self_improve": {"enabled": True, "interval_seconds": 21600.0}},
+    )
+
+
+async def test_the_wake_button_is_wired_end_to_end(tmp_path: Path) -> None:
+    """The join that makes the button real: a label on the screen, an
+    affordance behind it, and the broker handing it idle presses."""
+    app = NomadApp(_panel_with_trigger(tmp_path))
+    assert app.wake is not None
+    assert app.wake.label == WAKE_LABEL
+    await app.start()
+    try:
+        assert app.states()["input_broker"] is ComponentState.STARTED
+        headless = app.display.surface("headless")
+        # The boot frame the operator is looking at, with something to tap.
+        assert WAKE_LABEL in str(headless.screen.text)
+
+        # The frame the panel would send when a finger lands on that row.
+        await app.input.feed_choice(InputChoice(index=0, option=WAKE_LABEL))
+        for _ in range(200):
+            if app.wake.woke or app.wake.ignored:
+                break
+            await asyncio.sleep(0.01)
+        assert app.wake.woke == 1
+    finally:
+        await app.stop()
+
+
+async def test_no_button_is_drawn_without_a_trigger_to_fire(tmp_path: Path) -> None:
+    """A drawn control that cannot work is the inert-subsystem failure this
+    file exists to stop."""
+    app = NomadApp(_config(tmp_path, display={"driver": "esp32", "mirror": ["headless"]}))
+    assert app.self_improve is None
+    assert app.wake is None
+    assert app._wake_label() is None
+
+
+async def test_no_button_is_drawn_on_a_device_with_no_panel(tmp_path: Path) -> None:
+    """A headless build answers over HTTP and never feeds `InputStream`, so
+    nothing could report the tap."""
+    app = NomadApp(
+        _config(
+            tmp_path,
+            triggers={"self_improve": {"enabled": True, "interval_seconds": 21600.0}},
+        )
+    )
+    assert app.self_improve is not None
+    assert app.wake is None
+    assert app._wake_label() is None
+
+
+async def test_the_broker_starts_before_the_router_that_feeds_it(tmp_path: Path) -> None:
+    app = NomadApp(_panel_with_trigger(tmp_path))
+    order = [c.name for c in app._ordered_components()]
+    assert order.index("input_broker") < order.index("input_router")
+    assert order.index("input_broker") > order.index("input_stream")

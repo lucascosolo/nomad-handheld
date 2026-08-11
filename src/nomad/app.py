@@ -49,11 +49,13 @@ from nomad.agent.session import AgentSession
 from nomad.audio.selection import create_speaker_driver, create_synthesizer_driver
 from nomad.core.config import NomadConfig, PermissionMode
 from nomad.core.events import EventBus
+from nomad.core.instance import InstanceLock
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
 from nomad.hardware.fanout import DisplayFanout
 from nomad.hardware.panel_keeper import PANEL_SURFACE, PanelKeeper
 from nomad.hardware.selection import create_battery_driver, create_display_stack
+from nomad.input.broker import InputBroker
 from nomad.input.choice import (
     ExternalChoicePrompter,
     InputChoicePrompter,
@@ -63,6 +65,7 @@ from nomad.input.choice import (
 from nomad.input.mapper import InputMapper
 from nomad.input.router import InputRouter
 from nomad.input.stream import InputStream
+from nomad.input.wake import WAKE_LABEL, WakeAffordance
 from nomad.mcp.offline import build_offline_tools
 from nomad.mcp.server import build_hardware_tools
 from nomad.mcp.skills import build_skill_tools
@@ -186,6 +189,11 @@ class NomadApp:
 
         # Nothing here does I/O or binds anything; constructing the app must
         # be free of side effects so a failed `start()` has nothing stranded.
+        # One Nomad per data directory, and so one Claude session per device
+        # (D45). Constructed first and started first; it binds nothing until
+        # `start()`, so a refused boot has opened no database and connected no
+        # backend.
+        self.instance_lock = InstanceLock(config.core.data_dir)
         self.db = Database(config.storage.path)
         self.migrator = _Migrator(self.db)
         self.bus = EventBus()
@@ -264,6 +272,13 @@ class NomadApp:
         self.input_router = (
             InputRouter(self.esp32_link, self.input) if self.esp32_link is not None else None
         )
+        # The one reader of that stream, permanently (D44). It is not a feature
+        # and so it is not conditional: whoever holds the stream decides who
+        # sees a press, and "sometimes nobody is reading" is what let an idle
+        # tap queue up and be delivered to the next authorization prompt as
+        # though it answered it. Its idle handler is wired further down, once
+        # the thing a tap should reach exists.
+        self.input_broker = InputBroker(self.input)
         self.prompter = self._build_prompter()
 
         # The onboard tier (chunk O). The router is a fixed phrase set; the
@@ -304,7 +319,11 @@ class NomadApp:
             *build_offline_tools(self.intent_router, ledger=self.intent_ledger),
         ]
 
-        self.renderer = TurnRenderer(self.screen.view("renderer"), bus=self.bus)  # type: ignore[arg-type]
+        self.renderer = TurnRenderer(
+            self.screen.view("renderer"),  # type: ignore[arg-type]
+            bus=self.bus,
+            wake_label=self._wake_label(),
+        )
         self.view: ScreenServer | None = self._build_view()
         self.session = AgentSession(
             config=config,
@@ -360,6 +379,19 @@ class NomadApp:
         # (chunk P). Built after the session because it drives it, and started
         # after it for the same reason — see `_ordered_components`.
         self.self_improve = self._build_self_improve()
+        # The other end of the button the renderer draws (D44). Built here
+        # because this is the first point at which both halves exist: the
+        # broker needed the stream, and the thing a tap starts needed the
+        # session. `self.wake` stays `None` when there is nothing to fire —
+        # and `_wake_label()` returns `None` under the same condition, so the
+        # device never draws a control with nothing behind it.
+        self.wake = (
+            WakeAffordance(self.self_improve.fire_now)
+            if self.self_improve is not None and self._wake_label() is not None
+            else None
+        )
+        if self.wake is not None:
+            self.input_broker.set_idle_handler(self.wake)
         self.governor = self._build_governor()
         # Built last because it resolves through the session, which is what
         # supplies the permission mode the queue's `approve()` needs. Held
@@ -518,6 +550,25 @@ class NomadApp:
             readiness=self._backend_ready,
             max_consecutive_failures=trigger.max_consecutive_failures,
         )
+
+    def _wake_label(self) -> str | None:
+        """The label of the idle screen's one option, or `None` for no button.
+
+        Two conditions, and both are about honesty rather than taste (D44). A
+        wake button with `[triggers.self_improve]` disabled would draw a
+        control that cannot start anything, because the prompt and the
+        provenance it fires with are that trigger's. A wake button with no
+        panel would draw one nothing can report a tap on — a headless build
+        answers over HTTP and never feeds `InputStream` at all.
+
+        Read twice, from config both times, rather than cached: the renderer
+        needs it before the session exists and the affordance needs it after.
+        """
+        if not self._config.triggers.self_improve.enabled:
+            return None
+        if self._config.display.driver in _HEADLESS_DRIVERS:
+            return None
+        return WAKE_LABEL
 
     async def _backend_ready(self) -> bool:
         """Could a turn actually run right now? The same probe `nomad status` uses."""
@@ -701,9 +752,11 @@ class NomadApp:
 
         `InputStream.events()` is a single-consumer generator: two readers
         steal each other's presses, and a menu that misses every other press
-        is worse than one that misses all of them. So exactly one
-        `InputChoicePrompter` is ever constructed, here, and nothing else in
-        the tree is given `self.input`.
+        is worse than one that misses all of them. Since D44 that consumer is
+        `InputBroker` rather than this prompter — the prompter *borrows* the
+        stream for the length of one question — but the rule is unchanged and
+        now enforced in one place: exactly one `InputChoicePrompter` is ever
+        constructed, here, and nothing else in the tree is given `self.input`.
 
         Which prompter is decided by the display driver, because on this
         device they are the same fact: the joystick and the buttons are on the
@@ -733,7 +786,7 @@ class NomadApp:
             if self._config.view.enabled:
                 return ExternalChoicePrompter(show=show)
             return NullChoicePrompter(show=show)
-        return InputChoicePrompter(self.input, show=show)
+        return InputChoicePrompter(self.input_broker, show=show)
 
     def _headless_surfaces(self) -> list[str]:
         """Surfaces with no glass of their own, and so the ones a browser page
@@ -757,7 +810,11 @@ class NomadApp:
 
     def _ordered_components(self) -> list[Component]:
         """Start order. Stop order is exactly its reverse (`ComponentRegistry`)."""
-        components: list[Component] = [self.db, self.migrator, self.bus]
+        # First, before the database it protects and long before the backend
+        # session it exists to keep singular (D45). A second instance must fail
+        # having opened nothing — `ComponentRegistry` stops in reverse, so a
+        # lock taken here is also the last thing released.
+        components: list[Component] = [self.instance_lock, self.db, self.migrator, self.bus]
         if self.esp32_link is not None:
             # Before anything that draws. A display write to a link that has
             # not started raises, and the first thing F1 guarantees is that the
@@ -769,6 +826,12 @@ class NomadApp:
         # up before the session can publish a turn — and both must still be up
         # while the session stops.
         components.extend([self.renderer, self.authprompt, self.input])
+        # After the stream it reads and before the router that feeds it, so
+        # the one reader is already iterating when the first press can arrive.
+        # Stopping in reverse retires it before the stream closes, which is
+        # what keeps shutdown from logging a broker that "stopped" on a
+        # cancelled generator.
+        components.append(self.input_broker)
         if self.input_router is not None:
             # After `self.input`, so the stream's tick loop is running before
             # anything can be fed into it, and after the link, which is already
@@ -903,14 +966,27 @@ class NomadApp:
         A failure here is logged and dropped. A device that refuses to finish
         booting because it could not draw a summary of itself has turned a
         cosmetic problem into an outage.
+
+        **On a device with a wake button it is a `choice` screen instead**
+        (D44), carrying the same facts as its question and `Wake` as its one
+        option. This is the frame that sits on the glass from power-on until
+        something else draws — on a six-hour schedule, potentially all
+        morning — so it is exactly the screen that must be tappable. The card
+        layout is the thing given up, not the information.
         """
         try:
             report = await collect_status(self, probe=False)
-            await self.screen.view(STATUS_WRITER).show_card(
-                self._config.core.name,
-                "ready" if report.backend.ready else "backend down",
-                status_rows(report),
+            headline = "ready" if report.backend.ready else "backend down"
+            view = self.screen.view(STATUS_WRITER)
+            label = self._wake_label()
+            if label is None:
+                await view.show_card(self._config.core.name, headline, status_rows(report))
+                return
+            summary = " · ".join(
+                [f"{self._config.core.name} — {headline}"]
+                + [f"{key}: {value}" for key, value in status_rows(report)]
             )
+            await view.show_choice(summary, [label])
         except Exception as exc:  # noqa: BLE001 - never fail a boot over a status card
             logger.warning("Could not draw the status card", extra={"error": str(exc)})
 

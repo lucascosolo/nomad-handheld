@@ -330,6 +330,100 @@ async def test_stop_is_safe_before_start() -> None:
     await _trigger(_FakeSession()).stop()
 
 
+# -- poked by a person -----------------------------------------------------
+
+
+async def test_a_poke_starts_a_turn_without_waiting_for_it_to_finish() -> None:
+    """The whole point: a button handler must not block for the minutes a
+    turn takes, so `fire_now` returns before `send` has."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowSession(_FakeSession):
+        async def send(self, text: str, *, source: TurnSource = TurnSource.USER) -> TurnOutcome:
+            started.set()
+            await release.wait()
+            return await super().send(text, source=source)
+
+    session = _SlowSession()
+    trigger = _trigger(session, interval_s=0.0)
+    try:
+        assert trigger.fire_now() is True
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        # The turn is mid-flight and `fire_now` returned long ago.
+        assert trigger.turns_started == 0
+        release.set()
+        await _drain(trigger, until=lambda: trigger.turns_started >= 1)
+    finally:
+        await trigger.stop()
+
+    text, source = session.sent[0]
+    assert source is TurnSource.SELF
+    assert text == SELF_IMPROVE_PROMPT
+
+
+async def test_a_poke_is_refused_while_a_turn_is_in_flight() -> None:
+    session = _FakeSession()
+    session.busy = True
+    trigger = _trigger(session, interval_s=0.0)
+    try:
+        assert trigger.fire_now() is False
+        await asyncio.sleep(0.05)
+        assert session.sent == []
+    finally:
+        await trigger.stop()
+
+
+async def test_a_poke_does_not_ask_the_readiness_probe() -> None:
+    """The timer skips when the backend cannot authenticate. A person holding
+    the device is owed the error instead — a poke that silently does nothing
+    is indistinguishable from a dead button."""
+    asked = False
+
+    async def not_ready() -> bool:
+        nonlocal asked
+        asked = True
+        return False
+
+    session = _FakeSession()
+    trigger = _trigger(session, interval_s=0.0, readiness=not_ready)
+    try:
+        assert trigger.fire_now() is True
+        await _drain(trigger, until=lambda: len(session.sent) >= 1)
+        assert asked is False
+    finally:
+        await trigger.stop()
+
+
+async def test_a_failing_poke_does_not_spend_the_timers_failure_budget() -> None:
+    session = _FakeSession(outcomes=[RuntimeError("backend went away")] * 5)
+    trigger = _trigger(session, interval_s=0.0, max_consecutive_failures=2)
+    try:
+        for _ in range(4):
+            assert trigger.fire_now() is True
+            await _drain(trigger, until=lambda: len(session.sent) >= 1)
+            session.sent.clear()
+        assert trigger.consecutive_failures == 0
+        assert not trigger.stopped_after_failures
+    finally:
+        await trigger.stop()
+
+
+async def test_a_poke_still_works_after_the_timer_has_given_up() -> None:
+    """The cap silences the schedule, never the operator — who is very likely
+    poking it precisely because they noticed it went quiet."""
+    session = _FakeSession(outcomes=[RuntimeError("no")] * 3)
+    trigger = _trigger(session, max_consecutive_failures=2)
+    await trigger.start()
+    try:
+        await _drain(trigger, until=lambda: trigger.stopped_after_failures)
+        session.sent.clear()
+        assert trigger.fire_now() is True
+        await _drain(trigger, until=lambda: len(session.sent) >= 1)
+    finally:
+        await trigger.stop()
+
+
 # -- the real session honours `busy` ---------------------------------------
 
 

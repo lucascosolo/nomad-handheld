@@ -67,6 +67,14 @@ _THINKING_TITLE = "Thinking"
 _IDLE_TEXT = "idle"
 _IDLE_TITLE = "Nomad"
 
+#: How much of a settled answer reaches the glass **when the wake button is
+#: drawn under it** (D44). Much shorter than `DEFAULT_MAX_CHARS`, and not for
+#: taste: the panel wraps a choice screen's question and then draws the options
+#: below it, skipping any that no longer fit. A 600-character answer pushes the
+#: button off the bottom of the screen, which is exactly the state — a long
+#: answer, nothing happening — where the operator most wants something to tap.
+DEFAULT_MAX_WAKE_CHARS = 240
+
 #: How much of a tool's own argument reaches the glass. Long enough for a real
 #: command or a path to be recognisable, short enough that it cannot push the
 #: title off a screen that does not scroll.
@@ -145,10 +153,17 @@ class TurnRenderer:
         *,
         bus: EventBus,
         max_chars: int = DEFAULT_MAX_CHARS,
+        wake_label: str | None = None,
     ) -> None:
         self._display = display
         self._bus = bus
         self._max_chars = max_chars
+        #: The one option drawn under a settled screen, or `None` for a plain
+        #: text screen. The composition root passes a label only when a tap on
+        #: it would actually do something — there has to be a trigger to fire
+        #: and a panel able to report the tap (D44). A control that draws and
+        #: cannot work is worse than no control.
+        self._wake_label = wake_label
         self._state = ComponentState.NEW
         self._unsubscribe: Unsubscribe | None = None
         self._turn_id: str | None = None
@@ -180,7 +195,7 @@ class TurnRenderer:
         on its next tick anyway.
         """
         try:
-            await self._display.show_text(_IDLE_TEXT, title=_IDLE_TITLE)
+            await self._settle(_IDLE_TEXT, title=_IDLE_TITLE)
         except Exception:  # noqa: BLE001 - a screen must never block startup
             logger.warning("Could not draw the idle screen at startup", exc_info=True)
 
@@ -242,18 +257,50 @@ class TurnRenderer:
         error = payload.get("error")
 
         if status == TurnOutcomeStatus.COMPLETED:
-            await self._display.show_text(self._head(text) if text else "(no reply)")
+            await self._settle(self._head(text) if text else "(no reply)")
             return
         if status == TurnOutcomeStatus.INTERRUPTED:
-            await self._display.show_text(
-                self._head(text) if text else "(interrupted)", title="Interrupted"
-            )
+            await self._settle(self._head(text) if text else "(interrupted)", title="Interrupted")
             return
         # Failed, or a status this renderer does not know: say so rather than
         # leaving whatever happened to be on the glass.
-        await self._display.show_text(str(error or "the turn failed"), title="Error")
+        await self._settle(str(error or "the turn failed"), title="Error")
 
     # -- drawing -----------------------------------------------------------
+
+    async def _settle(self, text: str, *, title: str | None = None) -> None:
+        """A frame drawn when nothing is running — and so the one that carries
+        the wake button (D44).
+
+        Every screen this device shows while idle goes through here: the boot
+        frame and all three endings. That is the point. A button that appeared
+        after a completed turn but not after a failed one would be missing
+        precisely when the operator wants to poke the device, and nothing
+        redraws an ending — whatever this leaves on the glass stays there until
+        the next turn.
+
+        With no wake label it is `show_text`, unchanged. With one, the same
+        words become the question of a one-option `choice`, because that is the
+        screen shape the panel already reports taps on. The title moves into
+        the question: a choice screen's chrome says `Nomad`, so `Error` would
+        otherwise be dropped silently — and an error whose only marker was the
+        title reads as an answer once the title is gone.
+
+        Mid-turn frames deliberately do not come through here. `fire_now()`
+        refuses while the session is busy, and a button that is drawn and
+        refuses is worse than one that is absent.
+        """
+        if self._wake_label is None:
+            await self._display.show_text(text, title=title)
+            return
+        # `Nomad` is the chrome a choice screen already draws (D30), so folding
+        # it in would render the idle screen as "Nomad — idle" under the word
+        # Nomad.
+        prefix = title if title and title != _IDLE_TITLE else None
+        question = f"{prefix} — {text}" if prefix else text
+        if len(question) > DEFAULT_MAX_WAKE_CHARS:
+            question = question[: DEFAULT_MAX_WAKE_CHARS - 1].rstrip() + "…"
+        await self._display.show_choice(question, [self._wake_label])
 
     async def _draw_partial(self) -> None:
         """Mid-turn frame. Lossy on purpose — `turn_finished` corrects it."""

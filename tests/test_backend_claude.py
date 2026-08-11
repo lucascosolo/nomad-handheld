@@ -136,6 +136,45 @@ def test_an_empty_identity_file_falls_back(tmp_path) -> None:
     assert load_identity(path) == FALLBACK_IDENTITY
 
 
+#: A ceiling on the identity, in words. It is prepended to *every* turn, so
+#: every sentence here is rent paid forever — and a long system prompt does not
+#: merely cost tokens, it dilutes the rules that matter. Raising this number is
+#: allowed and should be a visible line in a diff, the way `index_budget_chars`
+#: is for skills; the wrong move is letting it grow a paragraph at a time
+#: because each addition looked small on its own.
+IDENTITY_WORD_BUDGET = 2400
+
+
+def test_the_identity_stays_short_enough_to_be_read_every_turn() -> None:
+    words = len(load_identity().split())
+    assert words <= IDENTITY_WORD_BUDGET, (
+        f"NOMAD.md is {words} words. Cut something or raise the budget on purpose."
+    )
+
+
+#: The rules that must survive any edit to NOMAD.md, as the phrases that carry
+#: them. Not a style check: these are the guardrails the broker enforces, and
+#: an identity that stopped stating them would leave the model to discover each
+#: one by being denied — which is a worse device and a wasted turn every time.
+_GUARDRAILS = (
+    "never edit your own running source tree",
+    "usb hid always asks first",
+    "anything destructive always asks first",
+    "never act outward on the world unasked",
+    "never store a credential",
+    "never route around your own broker",
+    "never claim a check passed that you did not run",
+)
+
+
+@pytest.mark.parametrize("rule", _GUARDRAILS)
+def test_the_identity_still_states_every_guardrail(rule: str) -> None:
+    """Trimming the prompt must never trim these. Matched on the normalised
+    text so a reflowed line break cannot fail the test."""
+    text = " ".join(load_identity().lower().replace("*", "").split())
+    assert rule in text
+
+
 def test_the_identity_teaches_the_small_screen_output_contract() -> None:
     """The display tool's schema is not the only ceiling on how Nomad answers."""
     text = load_identity().lower()
