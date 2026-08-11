@@ -1195,6 +1195,80 @@ from the glass it renders. Deliberate — the button is the panel's affordance �
 but if the operator drives the device from a phone, it is the obvious next
 place for it.
 
+### 2026-08-11 (early hours) — the first unattended night, and what it cost
+
+**The loop ran, and spent the whole time asking permission to look at things.**
+This is the entry to read before touching the trigger again.
+
+The schedule fired, the turn started, and then: `git log` behind a `cd &&`,
+`grep -rn … | head`, `find … 2>/dev/null`, `pwd; ls -la` — every one read-only,
+every one correctly refused (D41: a shell is `never_auto`, and a metacharacter
+disqualifies a declared command), every one costing sixty seconds of a live
+turn waiting for a tap nobody was there to make. Between attempts he ran
+`echo hello`, which the operator was watching and could not answer.
+
+D46 is the fix and it is three parts: a shorter wait when the turn's source is
+`SELF` (`[agent].unattended_prompt_seconds`, default 10s, 0 = deny without
+drawing); `pwd` and `ls` declared; and the `improving-yourself` skill rewritten
+around what exploring *costs* rather than around a prohibition. `Read`, `Grep`
+and `Glob` are path-checked and auto-approved on his own tree — that is the
+tool for looking at things, and the skill now says so while explicitly telling
+him to keep experimenting, because finding out what the device allows is how
+he learns it.
+
+**The skill also contained a bug that was actively costing him turns**: step 3
+told him never to chain commands and then showed him
+`cd <worktree> && ./.venv/bin/python -m pytest` as the example to copy. The
+example is now three separate calls.
+
+**Also this session:** `AgentSession.current_turn_source` (what D46's probe
+reads), the view bound to the tailnet address `100.94.143.39:8081` so the
+operator can answer prompts and talk to him from a phone, and the device's
+`first_tick_seconds` behaviour verified on real hardware — the restart at
+00:27 produced a turn at 00:29 rather than at 01:27.
+
+**Fixed the same night (D47): the browser view can now answer.** It rendered
+the question — as screen HTML, a mirror of the glass — and had no buttons,
+because `pending_choice` and `answer_choice` were mounted only for the headless
+prompter. So on the real device the prompt was readable on two surfaces and
+answerable on neither, while the operator watched. `InputChoicePrompter` now
+publishes the live question as a token-scoped `PendingQuestion` and takes
+`answer(token, index)` / `cancel(token)`; the composition root wires the
+endpoint for either prompter.
+
+The answer deliberately does *not* go in through `InputStream.feed_choice`,
+however neat D44's broker makes that look: every authorization prompt draws the
+same three labels, so a stale click on a page showing a question that has gone
+would pass the label check and answer whatever replaced it. The token is
+checked first — minted per question, compared with `compare_digest` — and only
+then is the resolved selection handed to the borrower via `InputBroker.offer`.
+
+**Still open, and now the only thing between him and an answerable prompt on
+the glass itself:** the operator reports the **authorization prompt is not
+appearing on the panel**, while the same frame is
+demonstrably in the screen buffer (pulled over the view mid-prompt: title,
+tool, command and all three options) and the serial transport shows no errors.
+Panel frames were reaching the glass a minute earlier in the same session, so
+this is not a dead link. Not diagnosed. A deliberate test frame while nothing
+else holds the screen is the next step. The browser view (D47) is the
+working surface until then.
+
+**One more thing the operator hit, and it is behaviour rather than a bug:**
+messages typed into the view's compose box during a live turn appear to do
+nothing. `send()` serialises on the turn lock (D1), so the message is not lost
+— it lands when the current turn ends, minutes later. That is the right
+behaviour and the wrong feedback: the page should say "queued behind the turn
+in flight" rather than swallowing it, and `AgentSession.busy` is already the
+fact it needs.
+
+**Wanted, not built:** voice. The hardware is there — a USB PnP capture device
+(TI PCM2902) and the Pi's headphone out — and the cheap half is output only
+(`speaker_driver = "alsa"`, `synthesizer_driver = "piper"`), which conflicts
+with nothing: D37 already gives him a `speak` tool. Listening is the operator's
+decision to make first, because D37 refuses a `listen` tool at any price, and
+the operator wants a **physical switch** for the microphone rather than a
+software gate. That switch is a hardware change and comes before the code.
+
 ## Known gaps
 
 Deliberately deferred, not forgotten, and not scheduled above.

@@ -210,6 +210,15 @@ command_timeout_seconds = 120
 # *editable* install pointing at its own `src`, which is the load-bearing
 # property, without the network being involved at all.
 allowed_commands = [
+  # Orientation. Read-only, and the two a stalled turn reaches for first —
+  # a device that cannot answer "where am I" without a human tap is one that
+  # spends its unattended time asking. Deliberately not `cat`, `grep` or
+  # `find`: a *shell* is not path-checked the way the file tools are, so those
+  # would read anywhere on the disk unattended, and `find` takes `-delete`.
+  # Looking at files has a better answer — the `Read`/`Grep`/`Glob` tools,
+  # which are confined to the workspace, the source tree and the scratch root.
+  "pwd",
+  "ls",
   "pytest",
   "ruff check",
   "ruff format --check",

@@ -181,6 +181,11 @@ class AgentSession:
         self._turn_lock = asyncio.Lock()
         self._current_turn_id: str | None = None
         self._current_turn_task: asyncio.Task[Any] | None = None
+        #: Who asked for the turn in flight, or `None` between turns. Set
+        #: alongside the task rather than in `_run_turn`, so it is true for the
+        #: same window `busy` is — an authorization arriving in the gap before
+        #: the turn row exists must not read as an operator's request.
+        self._current_turn_source: TurnSource | None = None
         self._resume_report: ResumeReport | None = None
         # Rollover bookkeeping. These track the *backend* session, which is
         # not the Nomad session: rolling starts a fresh transcript while the
@@ -310,6 +315,17 @@ class AgentSession:
     @property
     def current_turn_id(self) -> str | None:
         return self._current_turn_id
+
+    @property
+    def current_turn_source(self) -> TurnSource | None:
+        """Who asked for the turn in flight, or `None` if none is running.
+
+        Read by the composition root to answer one question the authorization
+        prompt cannot answer for itself: is there a person waiting on this
+        (D46). A turn nobody asked for is one nobody is watching, and a
+        question drawn for nobody costs a full timeout before failing closed.
+        """
+        return self._current_turn_source
 
     @property
     def busy(self) -> bool:
@@ -549,10 +565,12 @@ class AgentSession:
         async with self._turn_lock:
             task = asyncio.ensure_future(self._run_turn(text, source))
             self._current_turn_task = task
+            self._current_turn_source = source
             try:
                 return await task
             finally:
                 self._current_turn_task = None
+                self._current_turn_source = None
 
     async def _run_turn(self, text: str, source: TurnSource = TurnSource.USER) -> TurnOutcome:
         """Drive one turn through the backend and record what happened.

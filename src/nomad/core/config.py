@@ -115,6 +115,14 @@ class RemoteLlmConfig(BaseModel):
 class AgentConfig(BaseModel):
     backend: AgentBackendKind = AgentBackendKind.MOCK
     mode: PermissionMode = PermissionMode.MANUAL
+    #: How long an authorization prompt waits when **nobody asked for the
+    #: turn** (D46). A minute is right when a person is holding the device and
+    #: has to read a command; it is a minute of nothing when a timer started
+    #: the turn at 3am, and a loop that stalls a minute per call spends its
+    #: whole slot asking. Zero means "deny at once and do not draw" — the
+    #: default is short rather than zero, because the operator may well be
+    #: watching an unattended turn and able to answer from the browser view.
+    unattended_prompt_seconds: float = 10.0
     max_tool_calls_per_turn: int = 25
     # Ignored by backends that declare OWN_COMPACTION (D24).
     compact_at: float = 0.75

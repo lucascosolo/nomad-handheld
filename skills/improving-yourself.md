@@ -44,16 +44,37 @@ nobody can reach a keyboard.
    the same as no gate at all. Building the venv takes a minute or two on this
    hardware and the dependencies are already cached.
 
-2. **Read `docs/DECISIONS.md` before you change behaviour.** It is the
+2. **Know what exploring costs, and choose accordingly.** `Read`, `Grep` and
+   `Glob` are not the same thing as `Bash` to the broker, however similar the
+   job looks. A *shell* is `never_auto` in every mode (D41), so `find`,
+   `grep -rn`, `pwd`, `ls -la`, or `git log` behind a `cd &&` becomes a
+   question on the glass — and if nobody is there, that is a wait and then a
+   denial. `Read`, `Grep` and `Glob` over your own tree and your worktree are
+   read-only and path-checked, so they are approved without asking and cost
+   nothing.
+
+   Experiment freely; that is how you find out what this device actually
+   allows. Just spend the knowledge: when a shape gets denied twice, it is not
+   going to work the third time, and the answer is a different *tool* rather
+   than a differently-worded command. A few commands are declared and do run
+   unattended — the worktree and verification set in step 1 and step 4, plus
+   `pwd` and `ls` — and the rest of what you need to *look* at something, you
+   already have without a shell.
+
+3. **Read `docs/DECISIONS.md` before you change behaviour.** It is the
    contract. If your change and that file disagree, one of them is a bug and
    you say which — you do not quietly work around it.
 
-3. **Run the whole suite in the scratch tree, and read the output.**
+4. **Run the whole suite in the scratch tree, and read the output.**
 
    ```
-   cd ~/nomad-scratch/<short-name> && ./.venv/bin/python -m pytest -q -p no:cacheprovider
+   cd /home/nomad/nomad-scratch/<short-name>
+   ./.venv/bin/python -m pytest -q -p no:cacheprovider
    ./.venv/bin/ruff check src tests
    ```
+
+   Three calls, not one line — a chained `cd … && pytest` is the exact shape
+   the paragraph below refuses, and it costs a prompt and a denial every time.
 
    **These two commands run without asking you to be approved for them**, and
    that is deliberate: the operator declared them in `[tools].allowed_commands`
@@ -68,11 +89,11 @@ nobody can reach a keyboard.
    edit is not a gate. If you believe a test is genuinely wrong, say so and
    leave it for the operator.
 
-4. **Do not promote your own work.** Green tests earn you the right to *ask*.
+5. **Do not promote your own work.** Green tests earn you the right to *ask*.
    Report the branch, what changed, why, and the test output. Merging to
    `main` and restarting is the operator's call.
 
-5. **Append what happened to `docs/BUILD_LEDGER.md`** — including attempts
+6. **Append what happened to `docs/BUILD_LEDGER.md`** — including attempts
    that failed and why. A record of a dead end is worth more than a clean file,
    because the next attempt is otherwise identical to the last one.
 
@@ -111,11 +132,13 @@ In the order the operator wants them:
    only way to know.
 2. **The rest of chunk P.** Provenance and the self-improve trigger exist;
    sensor and timer triggers and the foreground/background lanes do not.
-3. **Later, and not yet:** replacing external model calls with work done
-   onboard or on the operator's VPS. The offline tier (chunk O) is the shape
-   this takes — deterministic handlers for what gets asked repeatedly, with
-   promotion proposed on evidence and approved by a human. It is the long arc,
-   explicitly *not* something to spend effort on now. Do not start it.
+3. **The long arc, one small piece at a time:** work you currently pay a model
+   to do, done onboard or on the operator's VPS instead. The offline tier
+   (chunk O) is the shape it takes — deterministic handlers for what gets
+   asked repeatedly, promotion proposed on evidence and approved by a human.
+   This is a direction, not a project to launch: a single repeated thing
+   turned into a tool that costs no tokens is real progress on it, and a
+   redesign proposed in one turn is not.
 
 ## The rule underneath all of this
 

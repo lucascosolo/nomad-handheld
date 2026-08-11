@@ -620,6 +620,12 @@ async def test_the_shipped_config_is_the_one_that_was_reviewed(
     """
     shipped = load_config().tools.allowed_commands
     assert shipped == [
+        # D46 — orientation, read-only, added after an unattended turn spent
+        # its whole slot asking permission to find out where it was. Not
+        # `cat`, `grep` or `find`: a shell is not path-checked the way the
+        # file tools are, and `find` takes `-delete`.
+        "pwd",
+        "ls",
         "pytest",
         "ruff check",
         "ruff format --check",

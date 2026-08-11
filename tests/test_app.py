@@ -22,7 +22,11 @@ from nomad.core.config import NomadConfig
 from nomad.core.errors import LifecycleError
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import HeadlessDisplay
-from nomad.input.choice import ExternalChoicePrompter, NullChoicePrompter
+from nomad.input.choice import (
+    ExternalChoicePrompter,
+    InputChoicePrompter,
+    NullChoicePrompter,
+)
 from nomad.input.wake import WAKE_LABEL
 from nomad.protocol.messages import InputChoice
 from nomad.storage.migrations import MIGRATIONS, current_version
@@ -510,3 +514,17 @@ async def test_the_broker_starts_before_the_router_that_feeds_it(tmp_path: Path)
     order = [c.name for c in app._ordered_components()]
     assert order.index("input_broker") < order.index("input_router")
     assert order.index("input_broker") > order.index("input_stream")
+
+
+async def test_the_browser_can_answer_a_prompt_on_a_device_with_a_panel(tmp_path: Path) -> None:
+    """D47. The page used to be a window onto the glass and not a control: the
+    answer callables were wired for the headless prompter only, so on the real
+    device the operator could read an authorization prompt and answer it
+    nowhere."""
+    app = NomadApp(_config(tmp_path, display={"driver": "esp32", "mirror": ["headless"]}))
+    assert isinstance(app.prompter, InputChoicePrompter)
+    assert app.view is not None
+    assert app.view.writable
+    # The two callables the page's Approve/Deny buttons are mounted on.
+    assert app.view._pending_choice is not None
+    assert app.view._answer_choice is not None

@@ -1524,6 +1524,114 @@ last.
 
 ---
 
+## D46 — a turn nobody asked for waits less for an answer
+
+**Decided:** an authorization prompt belonging to a turn with
+`TurnSource.SELF` waits `[agent].unattended_prompt_seconds` (default 10s)
+instead of the full 60. Zero means deny at once without drawing. `pwd` and `ls`
+join `[tools].allowed_commands`.
+
+**Observed, the first night the schedule ran unattended.** Nomad spent his
+whole slot asking permission to *look at things*. The audit table tells the
+story better than prose:
+
+```
+cd /home/nomad/nomad-handheld && git log --oneline -15     -> denied (60s)
+cd /home/nomad/nomad-handheld && grep -rn "D42" docs/… | head -50  -> denied (60s)
+find / -maxdepth 4 -iname "nomad-handheld" -type d 2>/dev/null     -> denied (60s)
+pwd; ls -la                                                        -> denied (60s)
+```
+
+Every one is read-only. Every one is correctly refused: D41 makes a *shell*
+`never_auto` in every mode, and any shell metacharacter disqualifies a
+declared command — so `git log` is allowlisted but `cd … && git log` is not.
+The rule is right. What was wrong is what it cost: a minute of a live turn per
+attempt, spent waiting for a tap that was never coming, on a device whose
+whole premise is that nobody is watching it at 3am.
+
+**Three changes, and the ordering of them is the decision.**
+
+1. **The wait is shorter when nobody asked for the turn.** The device cannot
+   know whether a person is watching, but it knows exactly who asked, because
+   every turn is stamped with its provenance (chunk P). Sixty seconds is the
+   right wait for a human reading a command off a pocket screen; it is sixty
+   seconds of nothing for a timer. The probe is injected into
+   `AuthorizationPrompter` as a callable — `view` may not import `agent` — and
+   a probe that is absent or raises answers *attended*, because the failure
+   that matters is cutting short a question the operator wanted to answer.
+2. **Not zero by default.** The obvious version of this decision is "deny
+   instantly, nobody is there". It is wrong on the evening the operator
+   switches the schedule on and watches it work, which is exactly when they
+   are holding the device and answering from the browser view. Ten seconds
+   still answers a person who is looking; zero is available for a device that
+   is genuinely alone.
+3. **`pwd` and `ls` are declared.** Deliberately *not* `cat`, `grep` or
+   `find`. A shell is not path-checked the way the file tools are, so those
+   three would read anywhere on the disk unattended, and `find` takes
+   `-delete`. Looking at files already has a better answer — `Read`, `Grep`
+   and `Glob`, which are confined to the workspace, the source tree and the
+   scratch root. The `improving-yourself` skill now says so, as information
+   about what things cost rather than as a rule: exploring is how a device
+   learns what it is allowed to do, and it should not be forbidden, only
+   *priced*.
+
+**What this does not change.** Nothing about which calls need authorization,
+and nothing about `never_auto`. A shorter wait is still a denial when it
+expires — fail-closed is untouched, and a call that would have been denied at
+sixty seconds is denied at ten.
+
+*Cost to change:* Low. One config key, one injected callable.
+
+---
+
+## D47 — the browser page is a control, not a window
+
+**Decided:** `InputChoicePrompter` publishes the live question as a
+token-scoped `PendingQuestion` and accepts `answer(token, index)` and
+`cancel(token)`. The composition root wires the view's answer endpoint for
+*either* prompter, so a device with a panel is answerable from a browser too.
+
+**The hole this closes was total, and it was found by an operator holding the
+device.** The page rendered the authorization prompt — as screen HTML, a
+mirror of the glass — and had no buttons, because `pending_choice` and
+`answer_choice` were mounted only when the prompter was an
+`ExternalChoicePrompter`, which is the headless build. On the real device the
+prompt was therefore readable on two surfaces and answerable on neither: the
+panel was not showing it (a separate, open bug) and the page could not resolve
+it. An unattended loop asking permission it was structurally impossible to
+grant is worse than one that never asks.
+
+**The answer does not go in through `InputStream`, and that is the decision.**
+D44's broker makes `feed_choice` from HTTP look neat, and
+`ExternalChoicePrompter`'s own docstring already argues the general case
+against it — but there is a sharper reason here. Every authorization prompt
+draws the same three labels, so an index plus a label cannot distinguish an
+answer to *this* question from a click on a page that was still showing the
+last one. `PendingQuestion.token` exists precisely for that, is minted per
+question, and is compared with `secrets.compare_digest`. So the token is
+checked by the prompter, and only then is the already-resolved selection
+handed to the borrower through `InputBroker.offer`.
+
+- **The publication window is exactly the answerable window.** The token is
+  set immediately before the borrow and cleared in a `finally`, so a token
+  that exists is a question a borrower is listening for. A token published
+  without a borrower would be a button that silently does nothing.
+- **A stale or absent token returns `False`, undifferentiated.** A page that
+  could tell "wrong token" from "no question" learns the shape of what it is
+  guessing at.
+- **Dismiss is `BACK`, not an option index**, so the browser and the physical
+  control resolve down the same path in `_run` — one behaviour to reason about
+  rather than two that must be kept in agreement.
+- **First answer wins, and both surfaces are the same operator.** This is not
+  two operators racing: it is one person who may be looking at either the glass
+  or their phone, and D36 still gives the prompt the screen exclusively for the
+  whole exchange.
+
+*Cost to change:* Low. Three members on one class and one `isinstance` in the
+composition root.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

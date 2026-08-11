@@ -52,6 +52,7 @@ from nomad.core.events import EventBus
 from nomad.core.instance import InstanceLock
 from nomad.core.lifecycle import Component, ComponentRegistry, ComponentState
 from nomad.core.logging import get_logger
+from nomad.core.turns import TurnSource
 from nomad.hardware.fanout import DisplayFanout
 from nomad.hardware.panel_keeper import PANEL_SURFACE, PanelKeeper
 from nomad.hardware.selection import create_battery_driver, create_display_stack
@@ -402,6 +403,13 @@ class NomadApp:
             screen=self.screen,
             prompter=self.prompter,
             resolver=self.session,
+            # D46. The prompter may not import `agent`, and does not need to:
+            # all it wants is "did a person ask for the turn this belongs to",
+            # which the session already knows because it stamps every turn with
+            # its provenance. Injected as a callable for the same reason the
+            # trigger's readiness probe is.
+            unattended=lambda: self.session.current_turn_source is TurnSource.SELF,
+            unattended_timeout_s=config.agent.unattended_prompt_seconds,
         )
 
         for component in self._ordered_components():
@@ -624,17 +632,24 @@ class NomadApp:
 
         pending: PendingSource | None = None
         answer: AnswerChoice | None = None
-        if isinstance(self.prompter, ExternalChoicePrompter):
-            browser = self.prompter
+        # Both prompters expose the same three members (`pending`, `answer`,
+        # `cancel`), and that is the whole of D47: the page is a *control* on
+        # a device with a panel, not only a window onto one. It used to be
+        # wired for the headless prompter alone, so on the real device the
+        # operator could watch an authorization prompt they had no way to
+        # answer — while the panel, which was supposed to be the way, was not
+        # showing it either.
+        if isinstance(self.prompter, ExternalChoicePrompter | InputChoicePrompter):
+            answerable = self.prompter
 
             def pending() -> PendingQuestion | None:
                 # An immutable snapshot, read from the HTTP thread.
-                return browser.pending
+                return answerable.pending
 
             async def answer(token: str, index: int) -> bool:
                 if index == DISMISS_INDEX:
-                    return await browser.cancel(token)
-                return await browser.answer(token, index)
+                    return await answerable.cancel(token)
+                return await answerable.answer(token, index)
 
         host, token = self._view_binding()
         return ScreenServer(
