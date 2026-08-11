@@ -1292,6 +1292,41 @@ decision to make first, because D37 refuses a `listen` tool at any price, and
 the operator wants a **physical switch** for the microphone rather than a
 software gate. That switch is a hardware change and comes before the code.
 
+### 2026-08-11 (early hours, last) — the buttons were never reaching the device
+
+**Every write from the browser page was answered 403, and the log said so to
+nobody.** The page loaded, the prompt rendered, the buttons appeared — and each
+click was refused before it reached `_answer`. Two dozen
+`Refused a write to the browser view` warnings sit in the journal against the
+operator's clicks; `Send` and the mode selector were just as dead.
+
+The cause is one arm of `ScreenServer._same_origin`. A remote view is reached by
+whatever the operator typed, so the check falls through to "allow if this view is
+remote at all" — but that fall-through lived inside `except ValueError`, which is
+the branch a *hostname* takes. A dotted quad parses fine, reports
+`is_loopback == False`, and returned `False` from inside the `try`. So
+`http://nomad.local:8081` could write and `http://100.94.143.39:8081` — the
+Tailscale address actually in the address bar — could not. The token check and
+the `SameSite=Strict` cookie both passed; the third layer refused alone.
+
+Fixed by moving the fall-through out of the exception arm: loopback host, or
+loopback IP, or the view is remote. Scheme and port are still exact, and a
+loopback-only view still refuses a LAN origin — `remote` is what widens it.
+Pinned by `test_a_remote_view_accepts_writes_from_its_own_lan_address` and its
+two negatives, because the old tests only ever posted from `127.0.0.1`.
+
+**Also: the prompt now collapses on click.** The answer is dispatched and not
+waited on (deliberately — waiting deadlocks a caller on the loop), so the
+buttons used to sit there until the next poll, up to a second of nothing after
+a tap. The collapse is optimistic, which makes it a claim rather than a
+confirmation, so it expires: if the same token is still pending three polls
+later the buttons come back, rather than leaving a question that looks answered
+and is not.
+
+**Not deployed.** The device was powered down for the night before this shipped.
+Next session: `git push pi main`, pull on the device, restart — and then click a
+button and watch the journal say nothing.
+
 ## Known gaps
 
 Deliberately deferred, not forgotten, and not scheduled above.

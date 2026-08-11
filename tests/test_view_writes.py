@@ -604,3 +604,96 @@ async def test_the_selector_reaches_the_real_session(tmp_path: Path) -> None:
         assert _get(app.view.url + "state")["mode"] == "auto"
     finally:
         await app.stop()
+
+
+# -- the origin check must not refuse the address the operator actually types --
+
+
+@pytest.fixture
+async def remote_writable():
+    """A view bound off loopback and reachable by address, as the device runs."""
+    submitted: list[str] = []
+
+    async def submit(text: str) -> None:
+        submitted.append(text)
+
+    server = ScreenServer(
+        lambda: "<pre>x</pre>",
+        host="0.0.0.0",
+        port=0,
+        token="s3cret-token",
+        submit_text=submit,
+    )
+    await server.start()
+    try:
+        yield server, f"http://127.0.0.1:{server.port}/", submitted
+    finally:
+        await server.stop()
+
+
+async def test_a_remote_view_accepts_writes_from_its_own_lan_address(remote_writable) -> None:
+    """The regression that made every button on the page look broken.
+
+    A remote view is reached by whatever the operator typed, and the fall-through
+    that allows it used to sit in an `except ValueError` arm — which a dotted quad
+    never enters. So `http://nomad.local:8081` could write and
+    `http://100.94.143.39:8081` could not: the page loaded, the prompt rendered,
+    and every click came back 403 while the device logged a refusal nobody was
+    watching. The token and the `SameSite=Strict` cookie are what authorize this;
+    the origin check is the third layer, and it must not be stricter than the
+    address bar.
+    """
+    server, url, submitted = remote_writable
+    for origin in (
+        f"http://100.94.143.39:{server.port}",
+        f"http://192.168.1.40:{server.port}",
+        f"http://nomad.local:{server.port}",
+    ):
+        status, _body = _post(
+            url + "submit",
+            {"text": origin},
+            headers={"Origin": origin, "Authorization": "Bearer s3cret-token"},
+        )
+        assert status == 202, origin
+        # One turn at a time: let the previous submission drain, or the second
+        # origin gets refused for being busy rather than for being foreign.
+        await asyncio.sleep(0.05)
+    assert len(submitted) == 3
+
+
+async def test_a_remote_view_still_refuses_another_port_and_another_site(
+    remote_writable,
+) -> None:
+    """Loosening the host must not loosen the rest of the check."""
+    server, url, submitted = remote_writable
+    for origin in (
+        f"https://100.94.143.39:{server.port}",  # scheme
+        f"http://100.94.143.39:{server.port + 1}",  # another service on the box
+        "http://evil.example",
+    ):
+        status, _body = _post(
+            url + "submit",
+            {"text": "x"},
+            headers={"Origin": origin, "Authorization": "Bearer s3cret-token"},
+        )
+        assert status == 403, origin
+    assert submitted == []
+
+
+async def test_a_loopback_view_does_not_trust_a_lan_origin() -> None:
+    """`remote` is what widens the check, so a loopback-only view must not."""
+    server = ScreenServer(lambda: "<pre>x</pre>", port=0, submit_text=_never)
+    await server.start()
+    try:
+        status, _body = _post(
+            server.url + "submit",
+            {"text": "x"},
+            headers={"Origin": f"http://192.168.1.40:{server.port}"},
+        )
+        assert status == 403
+    finally:
+        await server.stop()
+
+
+async def _never(text: str) -> None:  # pragma: no cover - the write is refused first
+    raise AssertionError(f"a refused write reached the session: {text!r}")
