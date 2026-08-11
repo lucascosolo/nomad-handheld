@@ -169,6 +169,9 @@ class _FakeSession:
 
 def _trigger(session: object, **kwargs: object) -> SelfImproveTrigger:
     kwargs.setdefault("interval_s", 0.01)
+    # The shipped first tick is two minutes; a suite that waited for it would
+    # not be a suite. Tests about the first tick specifically pass their own.
+    kwargs.setdefault("first_tick_s", 0.01)
     return SelfImproveTrigger(session, **kwargs)  # type: ignore[arg-type]
 
 
@@ -313,6 +316,56 @@ async def test_an_interrupted_turn_does_not_spend_the_budget() -> None:
         assert not trigger.stopped_after_failures
     finally:
         await trigger.stop()
+
+
+# -- the first tick after a boot -------------------------------------------
+
+
+async def test_the_first_turn_does_not_wait_a_whole_interval() -> None:
+    """The complaint that produced this: switching the device on and watching
+    it do nothing for an hour. A restart is usually the moment *after* a
+    change, so it is when there is most likely to be something worth doing."""
+    session = _FakeSession()
+    trigger = _trigger(session, interval_s=3600.0, first_tick_s=0.02)
+    await trigger.start()
+    try:
+        await _drain(trigger, until=lambda: trigger.turns_started >= 1)
+    finally:
+        await trigger.stop()
+    assert len(session.sent) == 1
+
+
+async def test_the_first_tick_still_waits_before_firing() -> None:
+    """Not zero. The panel, the link and the backend settle in the first
+    seconds of a boot, and a turn starting into that paints over the status
+    card the operator is still reading."""
+    session = _FakeSession()
+    trigger = _trigger(session, interval_s=3600.0, first_tick_s=5.0)
+    await trigger.start()
+    try:
+        await asyncio.sleep(0.05)
+        assert session.sent == []
+    finally:
+        await trigger.stop()
+
+
+async def test_after_the_first_tick_the_interval_takes_over() -> None:
+    """A short first tick must not become a short *loop* — that would be a
+    device permanently busy with itself."""
+    session = _FakeSession()
+    trigger = _trigger(session, interval_s=3600.0, first_tick_s=0.02)
+    await trigger.start()
+    try:
+        await _drain(trigger, until=lambda: trigger.turns_started >= 1)
+        await asyncio.sleep(0.1)
+        assert len(session.sent) == 1
+    finally:
+        await trigger.stop()
+
+
+async def test_a_negative_first_tick_is_clamped_not_obeyed() -> None:
+    trigger = _trigger(_FakeSession(), first_tick_s=-30.0)
+    assert trigger._first_tick_s == 0.0
 
 
 async def test_a_zero_interval_is_off() -> None:
