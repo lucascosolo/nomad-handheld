@@ -492,6 +492,17 @@ class SelfImproveTriggerConfig(BaseModel):
 
     enabled: bool = False
     interval_seconds: float = 3600.0
+    #: How long after boot the *first* turn may start, in seconds. Its own key
+    #: rather than a share of the interval, because they answer different
+    #: questions: the interval is how often unattended work is worth doing, and
+    #: this is how long a device that was just switched on should sit there
+    #: doing nothing. Sharing one number meant a restart cost an hour of
+    #: silence — and a restart is usually the moment *after* a change, which is
+    #: when there is most likely to be something worth working on. Not zero by
+    #: default: the panel, the link and the backend all settle in the first
+    #: seconds, and a turn starting into that paints over the status card the
+    #: operator is still reading.
+    first_tick_seconds: float = 120.0
     max_consecutive_failures: int = 3
 
 

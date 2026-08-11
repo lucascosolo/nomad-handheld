@@ -547,6 +547,7 @@ class NomadApp:
         return SelfImproveTrigger(
             self.session,
             interval_s=trigger.interval_seconds,
+            first_tick_s=trigger.first_tick_seconds,
             readiness=self._backend_ready,
             max_consecutive_failures=trigger.max_consecutive_failures,
         )

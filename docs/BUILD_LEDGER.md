@@ -1180,6 +1180,15 @@ demonstration. The file is now budgeted: `IDENTITY_WORD_BUDGET` (2400) and a
 parametrised test over the seven guardrail phrases, so trimming the prompt can
 never quietly trim a rule. It sits at ~2080 words.
 
+**Follow-up the same night: the first tick.** The loop slept a whole interval
+before its first turn, so switching the device on meant an hour of nothing —
+and a restart is usually the moment *after* a change, which is when there is
+most likely to be something worth doing. `first_tick_seconds` is now its own
+config key, defaulting to 120s. Not zero: the panel, the link and the backend
+settle in the first seconds and a turn starting into that paints over the
+status card still being read. The interval takes over from the second tick, so
+a short first wait cannot become a short loop.
+
 **Left for the next session:** the browser view has no wake control (D42's mode
 selector is there; this is not), so a headless build still cannot start a turn
 from the glass it renders. Deliberate — the button is the panel's affordance —

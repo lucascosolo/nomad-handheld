@@ -75,6 +75,15 @@ SELF_IMPROVE_PROMPT = (
 )
 
 
+#: How long after start the first unprompted turn may begin. Short, because an
+#: operator who just power-cycled the device should not wait an hour to see it
+#: do anything — and a restart usually follows a change, which is when there is
+#: most likely to be something worth working on. Not zero, because the panel,
+#: the serial link and the backend connection settle in the first seconds and a
+#: turn starting into that paints over the status card still being read.
+DEFAULT_FIRST_TICK_SECONDS = 120.0
+
+
 class SelfImproveTrigger:
     """Starts one self-directed turn per interval, and stops if they keep failing."""
 
@@ -85,12 +94,19 @@ class SelfImproveTrigger:
         session: AgentSession,
         *,
         interval_s: float,
+        first_tick_s: float = DEFAULT_FIRST_TICK_SECONDS,
         readiness: ReadinessProbe | None = None,
         max_consecutive_failures: int = 3,
         prompt: str = SELF_IMPROVE_PROMPT,
     ) -> None:
         self._session = session
         self._interval_s = interval_s
+        #: How long after start the *first* tick happens. Separate from the
+        #: interval because they answer different questions: the interval is
+        #: how often unattended work is worth doing, and this is how long a
+        #: device that was just switched on should sit idle first. Sharing one
+        #: number made a restart cost a full hour of nothing.
+        self._first_tick_s = max(0.0, first_tick_s)
         self._readiness = readiness
         self._max_consecutive_failures = max_consecutive_failures
         self._prompt = prompt
@@ -196,8 +212,18 @@ class SelfImproveTrigger:
         )
 
     async def _run(self) -> None:
+        # The first wait is its own number. Sleeping a full interval before the
+        # first tick meant a device that had just been switched on sat there
+        # doing nothing for an hour — and a restart is exactly when there is
+        # most likely to be something worth doing, because a restart usually
+        # follows a change. The short wait is not zero: the panel, the link and
+        # the backend connection all settle in the first seconds of a boot, and
+        # a turn that starts into that draws over the status card the operator
+        # is still reading.
+        delay = self._first_tick_s
         while True:
-            await asyncio.sleep(self._interval_s)
+            await asyncio.sleep(delay)
+            delay = self._interval_s
             if not await self._should_fire():
                 continue
             if not await self._fire():

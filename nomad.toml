@@ -308,6 +308,14 @@ enabled = false
 # turn is in flight is skipped, never queued: waiting for the lock would mean
 # answering the operator's question and then, unprompted, starting on its own.
 interval_seconds = 3600.0
+# How long after boot the *first* turn may start. Its own key, because a device
+# that was just switched on sitting idle for a full interval is not caution, it
+# is a device that looks broken — and a restart is usually the moment after a
+# change, which is when there is most likely to be something worth doing. Not
+# zero: the panel, the serial link and the backend connection all settle in the
+# first seconds, and a turn starting into that paints over the status card the
+# operator is still reading.
+first_tick_seconds = 120.0
 # Three failures in a row is not bad luck - it is a logged-out CLI, a full
 # disk, or a wedged backend - so the loop stops loudly and stays stopped until
 # a restart. Note that a *failed turn* counts here, not just a raised one: the
