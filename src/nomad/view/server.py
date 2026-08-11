@@ -203,21 +203,40 @@ const post = async (path, body) => {
   return res.json().catch(() => ({}));
 };
 let shownToken = null;
+// The token last clicked, and when. The answer is dispatched and not waited
+// on, so without this the buttons sit there until the next poll — up to a
+// full second of nothing after a tap, which feels broken. Collapsing on click
+// is a claim, not a confirmation, so it expires: if the same question is still
+// pending __ANSWER_GRACE_MS__ later the answer did not land and the buttons
+// come back rather than leaving a question that looks answered and is not.
+let answeredToken = null;
+let answeredAt = 0;
 const prompt = document.getElementById('prompt');
+const collapse = () => { prompt.className = ''; prompt.replaceChildren(); shownToken = null; };
 const renderPrompt = (p) => {
-  if (!p) { prompt.className = ''; prompt.replaceChildren(); shownToken = null; return; }
+  if (!p) { collapse(); answeredToken = null; return; }
+  if (p.token === answeredToken) {
+    if (Date.now() - answeredAt < __ANSWER_GRACE_MS__) return;
+    answeredToken = null;  // it did not take; show it again
+  }
   if (p.token === shownToken) return;
   shownToken = p.token;
   prompt.replaceChildren();
+  const choose = (index) => {
+    answeredToken = p.token;
+    answeredAt = Date.now();
+    collapse();
+    post('/answer', {token: p.token, index: index}).then(poll);
+  };
   p.options.forEach((option, index) => {
     const button = document.createElement('button');
     button.textContent = option;
-    button.onclick = () => post('/answer', {token: p.token, index: index});
+    button.onclick = () => choose(index);
     prompt.appendChild(button);
   });
   const dismiss = document.createElement('button');
   dismiss.textContent = 'Dismiss';
-  dismiss.onclick = () => post('/answer', {token: p.token, index: __DISMISS__});
+  dismiss.onclick = () => choose(__DISMISS__);
   prompt.appendChild(dismiss);
   prompt.className = 'live';
 };
@@ -471,6 +490,10 @@ class ScreenServer:
             style=style,
             refresh=self._refresh_seconds,
             refresh_ms=max(200, int(self._refresh_seconds * 1000)),
+            # Three polls' worth: one for the answer to reach the loop, and
+            # slack so a slow tick does not flap the buttons back onto a
+            # question that is about to disappear anyway.
+            answer_grace_ms=max(2000, int(self._refresh_seconds * 3000)),
             screen=self._screen_source(),
             compose=compose,
             dismiss=DISMISS_INDEX,
@@ -642,15 +665,24 @@ class ScreenServer:
             if host in _LOOPBACK_NAMES:
                 return True
             try:
-                return ipaddress.ip_address(host).is_loopback
+                if ipaddress.ip_address(host).is_loopback:
+                    return True
             except ValueError:
-                # A remote view is reached by whatever name the operator typed
-                # — `nomad.local`, a bare hostname, a LAN address — and this
-                # server cannot enumerate them. The token is what authorizes
-                # the request; the `SameSite=Strict` cookie is what keeps
-                # another site from carrying it. This check is the third layer,
-                # and it only has to be exact while there is nothing else.
-                return self.remote
+                pass
+            # A remote view is reached by whatever the operator typed —
+            # `nomad.local`, a bare hostname, a Tailscale address — and this
+            # server cannot enumerate them. The token is what authorizes the
+            # request; the `SameSite=Strict` cookie is what keeps another site
+            # from carrying it. This check is the third layer, and it only has
+            # to be exact while there is nothing else.
+            #
+            # This used to answer `False` for any non-loopback *IP*, because
+            # the fall-through lived in the `except ValueError` arm and a
+            # dotted quad parses. So a view reached by name worked and the
+            # same view reached by address refused every write — every button
+            # on the page 403'd while the page itself loaded fine, which reads
+            # as "the buttons are broken", not as a security check firing.
+            return self.remote
         except ValueError:
             return False
 
