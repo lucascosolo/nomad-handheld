@@ -1261,6 +1261,29 @@ behaviour and the wrong feedback: the page should say "queued behind the turn
 in flight" rather than swallowing it, and `AgentSession.busy` is already the
 fact it needs.
 
+**But the operator asked for something stronger, and it is worth its own
+decision:** they want what a Claude Code CLI session does — a message typed
+mid-turn is *injected into the running turn*, landing beside the next tool
+result, rather than starting a fresh turn once the current one ends. That is a
+different thing from queueing and it is not a view change: it needs the
+backend to accept a second user message on a live stream, so it is a
+`BackendCapability` question (D24) before it is a UI one, and `MockBackend`
+must model it or the suite cannot test it. Worth doing — steering a long turn
+without killing it is most of what makes the laptop tool feel responsive — and
+worth doing deliberately.
+
+**Not possible as asked, and the reason is architectural rather than a missing
+switch:** the operator expected Nomad to appear in the Claude app's remote
+control / live sessions list, and to approve tool calls from there. Nomad does
+not run an interactive Claude Code session — it embeds the Agent SDK
+(`claude-agent-sdk`, D24) headless, which is what makes `can_use_tool` the
+funnel every call goes through (D21). A session that appeared in the app would
+be approved *in the app*, which is precisely the path that bypasses Nomad's
+broker, its grants, its audit table and `never_auto`. So the answer is not to
+get Nomad into that list; it is to make Nomad's own remote surface as good —
+D47 gives it real controls, and what it still lacks is a *notification*: the
+operator has no way to know a prompt is waiting without looking at the page.
+
 **Wanted, not built:** voice. The hardware is there — a USB PnP capture device
 (TI PCM2902) and the Pi's headphone out — and the cheap half is output only
 (`speaker_driver = "alsa"`, `synthesizer_driver = "piper"`), which conflicts
