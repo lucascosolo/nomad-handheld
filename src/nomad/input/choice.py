@@ -31,8 +31,8 @@ from enum import StrEnum
 
 from nomad.core.logging import get_logger
 from nomad.input.actions import ACTION_BACK, ACTION_CONFIRM, ACTION_NAV_DOWN, ACTION_NAV_UP
+from nomad.input.broker import InputBroker
 from nomad.input.events import ActionPhase, ChoiceSelection, InputAction
-from nomad.input.stream import InputStream
 
 logger = get_logger(__name__)
 
@@ -259,16 +259,23 @@ class InputChoicePrompter:
     Navigation is edge-triggered — `PRESS` only — so holding the stick does not
     race through the options. That is the menu half of the one-stream design in
     `input/mapper.py`: this consumer simply ignores `REPEAT`.
+
+    **It borrows the stream rather than reading it (D44).** It used to hold the
+    single-consumer role itself, which meant nothing could react to a press
+    between questions — and, less obviously, that a press made while no
+    question was up sat in the queue and was delivered to the *next* one as
+    though it had been made in answer to it. A borrow starts empty, so it
+    cannot be answered by a finger that moved before the question existed.
     """
 
     def __init__(
         self,
-        stream: InputStream,
+        broker: InputBroker,
         *,
         show: ShowChoice,
         default_timeout_s: float = DEFAULT_CHOICE_TIMEOUT_S,
     ) -> None:
-        self._stream = stream
+        self._broker = broker
         self._show = show
         self._default_timeout_s = default_timeout_s
 
@@ -317,33 +324,37 @@ class InputChoicePrompter:
         highlighted = 0
         await self._show(question, options, highlighted)
 
-        async for event in self._stream.events():
-            if isinstance(event, ChoiceSelection):
-                result = self._selected(event, options)
-                if result is not None:
-                    return result
-                continue
+        async with self._broker.borrow() as events:
+            async for event in events:
+                if isinstance(event, ChoiceSelection):
+                    result = self._selected(event, options)
+                    if result is not None:
+                        return result
+                    continue
 
-            if not isinstance(event, InputAction) or event.phase is not ActionPhase.PRESS:
-                # Touch events and REPEAT are not menu navigation. Ignoring
-                # REPEAT here is what makes this edge-triggered.
-                continue
+                if not isinstance(event, InputAction) or event.phase is not ActionPhase.PRESS:
+                    # Touch events and REPEAT are not menu navigation. Ignoring
+                    # REPEAT here is what makes this edge-triggered.
+                    continue
 
-            if event.action == ACTION_NAV_UP:
-                highlighted = (highlighted - 1) % len(options)
-            elif event.action == ACTION_NAV_DOWN:
-                highlighted = (highlighted + 1) % len(options)
-            elif event.action == ACTION_CONFIRM:
-                return ChoiceResult(
-                    outcome=ChoiceOutcome.ANSWERED,
-                    option=options[highlighted],
-                    index=highlighted,
-                )
-            elif event.action == ACTION_BACK:
-                return ChoiceResult(outcome=ChoiceOutcome.CANCELLED)
-            else:
-                continue
+                if event.action == ACTION_NAV_UP:
+                    highlighted = (highlighted - 1) % len(options)
+                elif event.action == ACTION_NAV_DOWN:
+                    highlighted = (highlighted + 1) % len(options)
+                elif event.action == ACTION_CONFIRM:
+                    return ChoiceResult(
+                        outcome=ChoiceOutcome.ANSWERED,
+                        option=options[highlighted],
+                        index=highlighted,
+                    )
+                elif event.action == ACTION_BACK:
+                    return ChoiceResult(outcome=ChoiceOutcome.CANCELLED)
+                else:
+                    continue
 
-            await self._show(question, options, highlighted)
+                await self._show(question, options, highlighted)
 
-        return ChoiceResult(outcome=ChoiceOutcome.NO_OPERATOR)  # pragma: no cover
+        # The borrowed stream ended, which happens for exactly one reason: the
+        # broker refused this borrow because another question already holds the
+        # stream. No answer is the safe reading, and `NO_OPERATOR` denies.
+        return ChoiceResult(outcome=ChoiceOutcome.NO_OPERATOR)

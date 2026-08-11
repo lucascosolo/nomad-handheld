@@ -1398,6 +1398,132 @@ failing before it was trusted.
 
 ---
 
+## D44 — one reader of the input stream, and a Wake button on the idle screen
+
+**Decided:** `InputBroker` becomes the single permanent consumer of
+`InputStream.events()`. It lends the stream to one borrower at a time — an
+authorization prompt — and hands every other event to an *idle handler*. The
+idle handler on this device is a **Wake** button: the idle screen is drawn as a
+one-option `choice`, and tapping it starts a self-directed turn.
+
+**The operator's ask was small: "if he's idle I should have a button to tap to
+wake him up." Two facts made the obvious implementation wrong.**
+
+1. **The joystick and the physical buttons are not wired on this hardware.**
+   Touch is the only live input, so a wake control cannot be a button mapping,
+   however natural "map a button to WAKE" reads.
+2. **`InputStream.events()` is single-consumer, and the one consumer was the
+   authorization prompter — which reads only while a question is up.** On a
+   handheld that is nearly none of the time. So there was nowhere for an idle
+   affordance to live, and it could not simply open a second reader: two
+   `async for` loops over one queue steal from each other, and input that
+   arrives every *other* press looks like failing hardware rather than a bug.
+
+**The queued-press bug found on the way, which is the better half of this
+decision.** Idle presses did not vanish; the stream is a bounded queue and they
+*sat* there. The next question to open a reader received them as though they
+had been made in answer to it. For an authorization prompt that is the
+difference between approving what the operator read and approving what happened
+to be on the glass ten minutes earlier. `ChoiceSelection` was already defended
+by label, but a bare `CONFIRM` action carries no label to check. **A borrow
+starts empty**, which closes it structurally rather than by comparison.
+
+**Why the button is a one-option `choice` screen.**
+
+- It needs no firmware change. `ScreenKind.CHOICE` already draws options and
+  the panel already reports which one a tap landed on (`input.choice`,
+  D30) — the same round trip that answers an authorization prompt. Nothing
+  on the Pi hit-tests coordinates, so D13 holds.
+- It is not a raw touch handler. Any-tap-wakes is one pocket brush away from
+  spending money, and the panel reports raw touch on every screen. A named
+  option is a deliberate press, and the label is checked.
+- The button is drawn **only when it does something**: the self-improvement
+  trigger has to exist (`[triggers.self_improve].enabled`) and there has to be
+  a panel that can report a tap. A drawn control that cannot work is the
+  inert-subsystem failure this codebase keeps finding in itself.
+- It is drawn only while **idle**. A turn in flight redraws over it, which is
+  correct — `fire_now()` refuses while the session is busy, and a button that
+  is present but refuses is worse than one that is absent.
+
+**What the button may do, and what it may not.** It starts the *same*
+self-directed turn the timer starts: the configured prompt, `TurnSource.SELF`,
+through `AgentSession.send()`. It is not a second way into the toolset — every
+tool that turn calls is authorized exactly as it would have been at 3 a.m.
+(D4, D14, D21). Three differences from the scheduled path, all in the direction
+of answering the person holding the device:
+
+- **No readiness probe.** The timer skips a tick when the backend cannot
+  authenticate, because a loop firing into a wall forever is what that brake
+  exists to stop. A person is owed the error instead; a poke that silently does
+  nothing is indistinguishable from a dead button.
+- **It does not spend `max_consecutive_failures`.** That is a brake on
+  something unattended, and a hand is attended by definition.
+- **It still works after the timer has given up.** `stopped_after_failures`
+  silences the schedule until a restart. It must not silence the operator, who
+  is very likely poking the device precisely because they noticed it went
+  quiet.
+
+**`fire_now()` starts a turn; it does not await one.** `send()` returns at the
+*end* of a turn — minutes — so a handler that awaited it would be a hung UI
+holding a request open while the screen it is already updating tells the story.
+It is a plain method rather than a coroutine so that the `busy` check and the
+task creation have no `await` between them: on D1's single loop, no second turn
+can slip in behind the check. The task is held in a set and its exception is
+read in a done callback, or asyncio reports the failure at collection time, far
+from the cause.
+
+**A second concurrent borrow is refused by ending the stream**, which makes
+`InputChoicePrompter` return `NO_OPERATOR` — a denial. It should not happen;
+an authorization prompt holds the screen exclusively for its whole exchange
+(D36). If it does happen, something above is wrong, and the safe reading of
+"wrong" is *no answer*. Waiting instead would leave two questions racing for
+one finger.
+
+*Cost to change:* Low. The broker is one small component with one borrower;
+removing the button is removing a label. Replacing it with a real physical
+button, once one is wired, changes the idle handler and nothing else.
+
+---
+
+## D45 — one Nomad per device, so one Claude session per device
+
+**Decided:** `NomadApp` takes an exclusive `flock` on `<data_dir>/nomad.lock`
+before it opens anything else. A second instance refuses to boot, naming the
+PID that holds it.
+
+**Why now.** The device is being switched from "answers when spoken to" to
+"thinks on a schedule" (D44 and the wake button are the operator-facing half).
+Two instances were already wrong — same SQLite file, same panel, two permission
+brokers with different ideas of what had been approved — but they were wrong in
+a way a person would notice within a minute, because both were only ever
+started by hand. **An unattended loop removes the person who would notice.**
+Two Nomads on a timer are two Claude Code sessions against one subscription,
+opening worktrees on the same tree, neither aware of the other.
+
+**Inside one process this was already handled and stays that way.** The
+concurrency guarantee the operator actually feels is `AgentSession`'s turn
+lock: `send()` serialises, `busy` reports it, the schedule *skips* a tick that
+lands during a live turn rather than queueing behind it, and `fire_now()`
+refuses. So remote-driving Nomad while the schedule is on cannot produce two
+turns — the second is declined, visibly, not stacked. This decision is only
+about the second *process*.
+
+**Why `flock` and not a PID file.** The kernel releases it when the process
+exits, however it exits. A PID file survives a crash and needs a
+liveness heuristic to distinguish "already running" from "died holding it",
+and that heuristic is exactly what fails at 3 a.m. after a power cut. Nothing
+to clean up is the feature.
+
+**What it does not cover, and this is stated rather than implied:** an operator
+who SSHes into the Pi and runs `claude` by hand has a second CLI session. No
+lock in this codebase can prevent that, and it should not try — those are the
+operator's own hands. What this bounds is what *Nomad* starts on its own.
+
+*Cost to change:* Trivial. One component, first in the start order, released
+last.
+
+---
+
 ## Deliberately deferred
 
 Not in the MVP, recorded so nobody assumes they were forgotten:

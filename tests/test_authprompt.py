@@ -19,6 +19,7 @@ from nomad.core.config import InputConfig, NomadConfig, PermissionMode
 from nomad.core.events import Event, EventBus
 from nomad.core.lifecycle import ComponentState
 from nomad.hardware.headless_display import HeadlessDisplay
+from nomad.input.broker import InputBroker
 from nomad.input.choice import ChoiceOutcome, ChoiceResult, InputChoicePrompter, NullChoicePrompter
 from nomad.input.mapper import InputMapper
 from nomad.input.stream import InputStream
@@ -500,12 +501,14 @@ async def test_the_joystick_approves_a_real_pending_authorization(
     """End to end over the mock stack: down once, confirm, grant minted."""
     stream = InputStream(InputMapper(InputConfig()))
     await stream.start()
+    broker = InputBroker(stream)
+    await broker.start()
     resolver = FakeResolver()
     component = AuthorizationPrompter(
         bus=event_bus,
         screen=screen,
         prompter=InputChoicePrompter(
-            stream, show=make_show(screen.view(AUTH_PROMPT_WRITER)), default_timeout_s=2.0
+            broker, show=make_show(screen.view(AUTH_PROMPT_WRITER)), default_timeout_s=2.0
         ),
         resolver=resolver,
     )
@@ -517,6 +520,7 @@ async def test_the_joystick_approves_a_real_pending_authorization(
         await _press(stream, ButtonId.A)  # CONFIRM
         await asyncio.wait_for(handling, timeout=2.0)
     finally:
+        await broker.stop()
         await stream.stop()
 
     assert resolver.approved == [(PENDING, False)]
@@ -528,12 +532,14 @@ async def test_the_back_button_denies_a_real_pending_authorization(
 ) -> None:
     stream = InputStream(InputMapper(InputConfig()))
     await stream.start()
+    broker = InputBroker(stream)
+    await broker.start()
     resolver = FakeResolver()
     component = AuthorizationPrompter(
         bus=event_bus,
         screen=screen,
         prompter=InputChoicePrompter(
-            stream, show=make_show(screen.view(AUTH_PROMPT_WRITER)), default_timeout_s=2.0
+            broker, show=make_show(screen.view(AUTH_PROMPT_WRITER)), default_timeout_s=2.0
         ),
         resolver=resolver,
     )
@@ -543,6 +549,7 @@ async def test_the_back_button_denies_a_real_pending_authorization(
         await _press(stream, ButtonId.B)  # BACK
         await asyncio.wait_for(handling, timeout=2.0)
     finally:
+        await broker.stop()
         await stream.stop()
 
     assert resolver.approved == []
